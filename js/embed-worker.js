@@ -14,9 +14,20 @@ let device = 'wasm';
 // Default: q8 on WASM (~90MB download, ~0.25s/image). 'webgpu' uses fp32 (~350MB download, faster; falls back to WASM).
 let preferredDevice = 'wasm';
 
+/** Why WebGPU could not be used (null when it can), so the page can tell the user instead of silently reverting. */
+async function webgpuProblem() {
+  if (!self.navigator?.gpu) return 'このブラウザでは Worker から WebGPU を使えません（navigator.gpu がありません）';
+  try {
+    const adapter = await navigator.gpu.requestAdapter();
+    return adapter ? null : 'GPU アダプタを取得できませんでした（GPU がブロックリスト入り、リモートデスクトップ／仮想環境、ハードウェアアクセラレーション無効など）';
+  } catch (error) {
+    return `GPU アダプタの取得でエラー: ${error?.message || error}`;
+  }
+}
+
 async function load() {
-  const hasWebGPU = !!(self.navigator && navigator.gpu && await navigator.gpu.requestAdapter().catch(() => null));
-  device = preferredDevice === 'webgpu' && hasWebGPU ? 'webgpu' : 'wasm';
+  let fallbackReason = preferredDevice === 'webgpu' ? await webgpuProblem() : null;
+  device = preferredDevice === 'webgpu' && !fallbackReason ? 'webgpu' : 'wasm';
   const progress_callback = p => { if (p.status === 'progress') postMessage({ type: 'model-progress', file: p.file, progress: p.progress }); };
   const processor = await AutoProcessor.from_pretrained(MODEL_ID, { progress_callback });
   let model;
@@ -24,10 +35,11 @@ async function load() {
     model = await CLIPVisionModelWithProjection.from_pretrained(MODEL_ID, { device, dtype: device === 'webgpu' ? 'fp32' : 'q8', progress_callback });
   } catch (error) {
     if (device !== 'webgpu') throw error;
+    fallbackReason = `WebGPU でモデルを読み込めませんでした: ${error?.message || error}`;
     device = 'wasm';
     model = await CLIPVisionModelWithProjection.from_pretrained(MODEL_ID, { device, dtype: 'q8', progress_callback });
   }
-  postMessage({ type: 'ready', device });
+  postMessage({ type: 'ready', device, fallbackReason });
   return { processor, model };
 }
 

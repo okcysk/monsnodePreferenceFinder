@@ -7,7 +7,7 @@ export class Embedder {
     this.device = null;
     this.worker.onmessage = ({ data }) => {
       if (data.type === 'model-progress') onModelProgress?.(data);
-      else if (data.type === 'ready') { this.device = data.device; onReady?.(data.device); }
+      else if (data.type === 'ready') { this.device = data.device; onReady?.(data.device, data.fallbackReason); }
       else if (data.type === 'error') this.initError = new Error(data.message);
       else if (data.type === 'embedded' || data.type === 'embed-error') {
         const p = this.pending.get(data.id);

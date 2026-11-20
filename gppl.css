@@ -97,3 +97,7 @@ kbd{display:inline-block;min-width:20px;padding:1px 6px;border:1px solid #555862
 .cell .err{z-index:5}
 .cell .err-actions{display:flex;gap:8px;justify-content:center}
 .cell.excluded .err{display:none}
+/* one-off notices (e.g. why WebGPU fell back to WASM) */
+.notice{position:fixed;z-index:15;top:60px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;max-width:min(720px,calc(100vw - 32px));padding:10px 12px;border-radius:10px;background:#3b2f14f2;border:1px solid #8a6d2a;color:#ffe6a8;font-size:13px;box-shadow:0 8px 24px #000a}
+.notice[hidden]{display:none}
+.notice button{flex:none;padding:2px 8px;color:#ffe6a8;border-color:#8a6d2a}

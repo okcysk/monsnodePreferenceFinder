@@ -12,7 +12,7 @@
 </head>
 <body>
 <header class="bar">
-  <div class="brand"><span class="mark">★</span><div>Preference Finder<small>PAIRWISE GPPL</small></div></div>
+  <div class="brand"><span class="mark">★</span><div>Preference Finder<small id="app-version" title="Pairwise GPPL">v0.4.0</small></div></div>
   <div class="setup">
     <input id="query" type="search" placeholder="検索語（空なら新着）">
     <select id="target" title="候補プールの本数">
@@ -42,6 +42,8 @@
     <button id="reset" class="ghost">リセット</button>
   </div>
 </header>
+
+<div id="notice" class="notice" hidden><span></span><button type="button" class="ghost" aria-label="閉じる">×</button></div>
 
 <main id="grid" class="grid" hidden></main>
 

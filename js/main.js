@@ -19,6 +19,7 @@ const ui = {
   empty: $('empty'), results: $('results'), resultsTitle: $('results-title'),
   resultsList: $('results-list'), closeResults: $('close-results'),
   help: $('help'), helpButton: $('help-button'), embedMode: $('embed-mode'), clipDevice: $('clip-device'),
+  notice: $('notice'),
 };
 
 /** id → {id, title, pageUrl, redirectUrl, thumbnail} */
@@ -44,6 +45,27 @@ let order = [];         // ids in the order the user clicked (best first)
 let skipped = new Set(); // videos on screen the user chose not to rate this round (Q / 評価しない)
 let activeIndex = 0;    // focused cell: playback shortcuts act on it (W/A/S/D, Tab, or click)
 
+/** A notice that stays until closed (the status line is overwritten by progress updates). */
+function showNotice(text) {
+  ui.notice.querySelector('span').textContent = text;
+  ui.notice.hidden = false;
+}
+ui.notice.querySelector('button').addEventListener('click', () => { ui.notice.hidden = true; });
+const NOTICE_KEY = 'gppl-notice';   // carries a notice across the reload that a backend switch needs
+
+/** Disable the WebGPU option up front when this browser cannot provide a GPU adapter. */
+async function checkWebGPUOption() {
+  const option = ui.clipDevice.querySelector('option[value="webgpu"]');
+  let problem = null;
+  if (!navigator.gpu) problem = 'このブラウザは WebGPU に対応していません';
+  else if (!(await navigator.gpu.requestAdapter().catch(() => null))) problem = 'GPU アダプタを取得できません';
+  if (problem) {
+    option.disabled = true;
+    option.textContent = 'CLIP: WebGPU（この環境では使えません）';
+    ui.clipDevice.title = `WebGPU: ${problem}`;
+  }
+}
+
 function setStatus(text, fraction = null) {
   ui.status.textContent = text;
   if (fraction !== null) ui.meter.style.width = `${Math.round(Math.max(0, Math.min(1, fraction)) * 100)}%`;
@@ -65,6 +87,11 @@ async function boot() {
   clipDevice = settings?.clipDevice === 'webgpu' ? 'webgpu' : 'wasm';
   ui.embedMode.value = embedMode;
   ui.clipDevice.value = clipDevice;
+  try {
+    const notice = sessionStorage.getItem(NOTICE_KEY);
+    if (notice) { sessionStorage.removeItem(NOTICE_KEY); showNotice(notice); }
+  } catch { /* ignore */ }
+  checkWebGPUOption();
   for (const e of await db.getAll(storeOf('embeddings'))) thumbEmb.set(e.id, e.vec);
   for (const e of await db.getAll(storeOf('frameEmbeddings'))) frameEmb.set(e.id, e.vec);
   buildPool();
@@ -149,10 +176,11 @@ function startEmbedding() {
   embedder ??= new Embedder({
     device: clipDevice,
     onModelProgress: p => setStatus(`CLIP モデルを読み込み中… ${p.file ?? ''} ${Math.round(p.progress ?? 0)}%`, (p.progress ?? 0) / 100),
-    onReady: async device => {
+    onReady: async (device, fallbackReason) => {
       if (device === clipDevice) { setStatus(`CLIP 準備完了（${device}）`); return; }
-      // WebGPU was requested but is unavailable: vectors would be q8, so switch the setting (and stores) to WASM.
-      setStatus('WebGPU が使えないため WASM に切り替えます…');
+      // WebGPU was requested but is unavailable: vectors would be q8, so switch the setting (and stores) to WASM,
+      // and keep the reason visible after the reload.
+      try { sessionStorage.setItem(NOTICE_KEY, `WebGPU を使えなかったため WASM に戻しました。理由: ${fallbackReason || '不明'}`); } catch { /* ignore */ }
       clipDevice = 'wasm';
       await saveSettings();
       location.reload();
