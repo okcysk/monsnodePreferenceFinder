@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- video.twimg.com answers 403 to foreign Referers (e.g. localhost); <video> has no referrerpolicy attribute, so set it page-wide. -->
+<meta name="referrer" content="no-referrer">
+<title>Embedding Map</title>
+<link rel="icon" href="favicon.png">
+<link rel="stylesheet" href="gppl.css">
+<link rel="stylesheet" href="viz.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand"><span class="mark">◎</span><div>Embedding Map<small>CLIP 512D → PCA 48D → 2D</small></div></div>
+  <div class="setup">
+    <label>配置 <select id="proj"><option value="tsne" selected>t-SNE</option><option value="pca">PCA (第1・第2主成分)</option></select></label>
+    <label>色 <select id="color"><option value="mu" selected>好き度 μ</option><option value="shown">表示済み</option><option value="none">なし</option></select></label>
+    <label>サイズ <input id="size" type="range" min="16" max="96" value="40"></label>
+    <button id="fit" class="ghost">全体表示</button>
+  </div>
+  <div class="status"><span id="status">読み込み中…</span><div class="meter"><div id="meter-fill"></div></div></div>
+  <div class="session"><a class="btnlink" href="index.html">← 戻る</a></div>
+</header>
+
+<main class="viz">
+  <canvas id="canvas"></canvas>
+  <div id="legend" class="legend"></div>
+  <div id="tip" class="tip" hidden><img alt=""><div class="tip-t"></div><div class="tip-s"></div></div>
+</main>
+
+<aside id="panel" class="panel">
+  <p class="placeholder">サムネをクリックすると、512次元の embedding 空間で近い動画（コサイン類似度）を表示します。<br><br>ホイールで拡大・ドラッグで移動。</p>
+</aside>
+
+<script type="module" src="js/viz.js"></script>
+</body>
+</html>

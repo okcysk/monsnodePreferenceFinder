@@ -1,0 +1,30 @@
+.setup label{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;white-space:nowrap}
+.setup input[type=range]{width:90px;padding:0}
+.viz{position:absolute;top:52px;left:0;right:340px;bottom:0;background:#0b0c10}
+#canvas{display:block;width:100%;height:100%;cursor:grab}
+#canvas.dragging{cursor:grabbing}
+.legend{position:absolute;left:12px;bottom:12px;padding:8px 10px;border-radius:10px;background:#111319e6;border:1px solid var(--line);font-size:11px;color:var(--muted)}
+.legend .bar-grad{width:180px;height:8px;border-radius:4px;margin:4px 0;background:linear-gradient(90deg,#3d7bff,#555862,#ff9a3d)}
+.legend .row{display:flex;justify-content:space-between}
+.legend .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:4px;vertical-align:-1px}
+.tip{position:absolute;z-index:5;pointer-events:none;width:220px;padding:8px;border-radius:10px;background:#14161cf2;border:1px solid var(--line);box-shadow:0 8px 24px #000a}
+.tip[hidden]{display:none}
+.tip img{width:100%;aspect-ratio:16/10;object-fit:cover;border-radius:6px;background:#000}
+.tip-t{margin-top:6px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tip-s{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+.panel{position:absolute;top:52px;right:0;bottom:0;width:340px;overflow:auto;padding:14px;background:#111319;border-left:1px solid var(--line)}
+.panel .placeholder{color:var(--muted);font-size:13px}
+.panel h3{margin:0 0 8px;font-size:14px}
+.panel .sel img{width:100%;aspect-ratio:16/10;object-fit:cover;border-radius:8px;background:#000}
+.panel .sel .t{margin:6px 0 2px;font-size:13px}
+.panel .sel .s{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.panel .sel a{color:var(--accent);font-size:12px;text-decoration:none}
+.nn{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.nn button{display:block;padding:0;border:1px solid var(--line);border-radius:8px;background:#1a1d24;overflow:hidden;text-align:left}
+.nn img{display:block;width:100%;aspect-ratio:16/10;object-fit:cover;background:#000}
+.nn span{display:flex;justify-content:space-between;gap:4px;padding:4px 6px;font:600 11px system-ui,sans-serif;color:var(--muted)}
+.nn span b{color:var(--accent);font-variant-numeric:tabular-nums}
+.hist{margin-top:14px}
+.hist canvas{width:100%;height:70px;display:block}
+.hist p{margin:4px 0 0;color:var(--muted);font-size:11px}
+@media(max-width:900px){.viz{right:0;bottom:40%}.panel{top:60%;width:auto;left:0;border-left:0;border-top:1px solid var(--line)}}

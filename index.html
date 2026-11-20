@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- video.twimg.com answers 403 to foreign Referers (e.g. localhost); <video> has no referrerpolicy attribute, so set it page-wide. -->
+<meta name="referrer" content="no-referrer">
+<title>Preference Finder</title>
+<meta name="description" content="4本の動画に順位を付けるだけで、Pairwise GP 選好学習が一番好きな動画を探します。">
+<link rel="icon" href="favicon.png">
+<link rel="stylesheet" href="gppl.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand"><span class="mark">★</span><div>Preference Finder<small>PAIRWISE GPPL</small></div></div>
+  <div class="setup">
+    <input id="query" type="search" placeholder="検索語（空なら新着）">
+    <select id="target" title="候補プールの本数">
+      <option value="100">100本</option>
+      <option value="300" selected>300本</option>
+      <option value="500">500本</option>
+    </select>
+    <button id="start" class="primary">プール取得</button>
+  </div>
+  <div class="status">
+    <span id="status">準備中…</span>
+    <div class="meter"><div id="meter-fill"></div></div>
+  </div>
+  <div class="session">
+    <span id="round">ラウンド 0</span>
+    <img id="best-thumb" alt="" hidden>
+    <button id="show-results">結果</button>
+    <a class="btnlink" href="viz.html" title="embedding を2次元マップで確認">マップ</a>
+    <button id="reset" class="ghost">リセット</button>
+  </div>
+</header>
+
+<main id="grid" class="grid" hidden></main>
+
+<footer class="actions" id="actions" hidden>
+  <span class="hint">好きな順にクリック（数字キー 1〜4 でも可）・Q で評価しない・W/A/S/D・Tab でフォーカス移動・<kbd>?</kbd> でショートカット一覧</span>
+  <button id="help-button" class="ghost" title="ショートカット一覧 (?)">?</button>
+  <button id="undo" class="ghost">戻す</button>
+  <button id="skip" class="ghost">全部微妙（スキップ）</button>
+  <button id="submit" class="primary" disabled>送信 (Enter)</button>
+</footer>
+
+<section id="empty" class="empty">
+  <h1>一番好きな動画を探す</h1>
+  <p>上の「プール取得」で候補を集め、サムネを CLIP で埋め込みます（初回はモデル約90MBをダウンロード）。<br>12本以上の埋め込みが済むとラウンドを始められます。</p>
+</section>
+
+<section id="results" class="results" hidden>
+  <div class="results-inner">
+    <div class="results-head">
+      <h2 id="results-title">あなたのお気に入り Top 10</h2>
+      <button id="close-results" class="ghost">続ける</button>
+    </div>
+    <ol id="results-list"></ol>
+  </div>
+</section>
+
+<section id="help" class="results" hidden>
+  <div class="results-inner help-inner">
+    <div class="results-head"><h2>ショートカット</h2><button class="ghost close">閉じる (Esc)</button></div>
+    <p class="help-note">再生操作はフォーカス中のセル（緑の枠・番号が緑）に効きます。フォーカスは W/A/S/D・Tab・クリックで移動します。</p>
+    <div class="help-cols">
+      <dl>
+        <dt>順位付け</dt><dd></dd>
+        <dt><kbd>1</kbd>〜<kbd>4</kbd></dt><dd>そのセルに次の順位を付ける / 外す</dd>
+        <dt><kbd>Enter</kbd></dt><dd>送信</dd>
+        <dt><kbd>Backspace</kbd></dt><dd>1つ戻す</dd>
+        <dt><kbd>Q</kbd></dt><dd>フォーカス中の動画を評価しない / 戻す（再生されない時など。以後は出てこない）</dd>
+        <dt>全体</dt><dd></dd>
+        <dt><kbd>Shift</kbd>+再生キー</dt><dd>右の再生操作をすべて4本まとめて実行（例 <kbd>Shift</kbd>+<kbd>Space</kbd> 全部 再生/停止、<kbd>Shift</kbd>+<kbd>X</kbd> 全部 5秒進む、<kbd>Shift</kbd>+<kbd>G</kbd> 全部 2.5x）</dd>
+      </dl>
+      <dl>
+        <dt>フォーカス</dt><dd></dd>
+        <dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>上 / 左 / 下 / 右のセルへ</dd>
+        <dt><kbd>Tab</kbd></dt><dd>次のセルへ（<kbd>Shift</kbd>+<kbd>Tab</kbd> で前へ）</dd>
+        <dt>再生（フォーカス中のセル）</dt><dd></dd>
+        <dt><kbd>Space</kbd></dt><dd>再生 / 一時停止</dd>
+        <dt><kbd>Z</kbd> / <kbd>X</kbd></dt><dd>5秒 戻る / 進む</dd>
+        <dt><kbd>C</kbd> / <kbd>V</kbd></dt><dd>30秒 戻る / 進む</dd>
+        <dt><kbd>F</kbd></dt><dd>速度を 1.0x に戻す</dd>
+        <dt><kbd>G</kbd> / <kbd>H</kbd></dt><dd>2.5x / 10x 切替</dd>
+        <dt><kbd>M</kbd></dt><dd>ミュート / 解除</dd>
+        <dt><kbd>↑</kbd> / <kbd>↓</kbd></dt><dd>音量 上げる / 下げる</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<script src="config.js"></script>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

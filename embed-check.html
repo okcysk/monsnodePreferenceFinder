@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ja">
+<head><meta charset="utf-8"><title>Embed check</title>
+<style>body{font:14px/1.5 system-ui,sans-serif;background:#111;color:#eee;padding:16px}</style></head>
+<body>
+<h1>CLIP embedding smoke test</h1>
+<p>合成画像（単色・グラデーション）を埋め込み、512次元・L2正規化・似た画像ほど近いことを確認します。モデル初回取得あり。</p>
+<pre id="out">running…</pre>
+<script type="module">
+import { Embedder } from './js/embed.js';
+const out = document.getElementById('out');
+const log = s => { out.textContent += '\n' + s; };
+function img(draw) {
+  const c = new OffscreenCanvas(224, 224); const g = c.getContext('2d'); draw(g); return c.convertToBlob({ type: 'image/png' });
+}
+// Embedder.embedThumbnail fetches a URL; feed blob: URLs.
+const red = URL.createObjectURL(await img(g => { g.fillStyle = '#d22'; g.fillRect(0, 0, 224, 224); }));
+const red2 = URL.createObjectURL(await img(g => { g.fillStyle = '#e33'; g.fillRect(0, 0, 224, 224); g.fillStyle = '#c11'; g.fillRect(40, 40, 60, 60); }));
+const blue = URL.createObjectURL(await img(g => { const gr = g.createLinearGradient(0, 0, 224, 224); gr.addColorStop(0, '#039'); gr.addColorStop(1, '#6cf'); g.fillStyle = gr; g.fillRect(0, 0, 224, 224); g.fillStyle = '#fff'; g.beginPath(); g.arc(112, 112, 50, 0, 7); g.fill(); }));
+const t0 = performance.now();
+const e = new Embedder({ onModelProgress: p => { out.textContent = `loading ${p.file} ${Math.round(p.progress)}%`; } });
+try {
+  const a = await e.embedThumbnail('a', red), b = await e.embedThumbnail('b', red2), c = await e.embedThumbnail('c', blue);
+  const t1 = performance.now();
+  const cos = (x, y) => x.reduce((s, v, i) => s + v * y[i], 0);
+  const norm = Math.hypot(...a);
+  log(`device=${e.device} dim=${a.length} norm=${norm.toFixed(4)} total=${(t1 - t0).toFixed(0)}ms`);
+  log(`cos(red, red2)=${cos(a, b).toFixed(3)}  cos(red, blue)=${cos(a, c).toFixed(3)}`);
+  const t2 = performance.now(); await e.embedThumbnail('d', blue); log(`per-image (warm)=${(performance.now() - t2).toFixed(0)}ms`);
+  window.__embedResult = { ok: a.length === 512 && Math.abs(norm - 1) < 1e-3 && cos(a, b) > cos(a, c), device: e.device };
+  log(window.__embedResult.ok ? 'PASS' : 'FAIL');
+} catch (err) { log('ERROR ' + err.message); window.__embedResult = { ok: false, error: err.message }; }
+</script>
+</body>
+</html>
