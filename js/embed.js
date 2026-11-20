@@ -13,7 +13,7 @@ export class Embedder {
         const p = this.pending.get(data.id);
         if (!p) return;
         this.pending.delete(data.id);
-        if (data.type === 'embedded') p.resolve(data.vec); else p.reject(new Error(data.message));
+        if (data.type === 'embedded') p.resolve(data.vecs); else p.reject(new Error(data.message));
       }
     };
     this.worker.postMessage({ type: 'init', device });
@@ -25,12 +25,28 @@ export class Embedder {
     return this.embedBlob(await res.blob());
   }
 
-  /** Embed any image blob (thumbnail or a video frame). Requests are queued in the worker in order. */
-  embedBlob(blob) {
+  /** Embed one image blob (thumbnail or a video frame). */
+  async embedBlob(blob) { return (await this.request([blob]))[0]; }
+
+  /**
+   * Embed several images. On WebGPU (fp32) they go as one batch: same vectors as one by one, ~15% faster.
+   * On WASM (q8) a batch changes the vectors (activation quantization depends on the batch) and is barely
+   * faster, so images are sent one by one there. Requests are queued in the worker in order.
+   */
+  async embedBlobs(blobs) {
+    if (this.device !== 'webgpu') {
+      const out = [];
+      for (const b of blobs) out.push(...await this.request([b]));
+      return out;
+    }
+    return this.request(blobs);
+  }
+
+  request(blobs) {
     const key = `r${++this.seq}`;
     return new Promise((resolve, reject) => {
       this.pending.set(key, { resolve, reject });
-      this.worker.postMessage({ type: 'embed', id: key, blob });
+      this.worker.postMessage({ type: 'embed', id: key, blobs });
     });
   }
 }

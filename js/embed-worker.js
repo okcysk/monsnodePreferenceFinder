@@ -11,7 +11,7 @@ env.backends.onnx.wasm.proxy = false;
 let ready = null;
 let device = 'wasm';
 
-// Default: q8 on WASM (~90MB download, ~0.2–0.4s/image). 'webgpu' uses fp32 (~350MB download, ~0.1s/image).
+// Default: q8 on WASM (~90MB download, ~0.25s/image). 'webgpu' uses fp32 (~350MB download, faster; falls back to WASM).
 let preferredDevice = 'wasm';
 
 async function load() {
@@ -39,17 +39,22 @@ self.onmessage = async ({ data }) => {
     return;
   }
   if (data.type === 'embed') {
+    // `blobs`: one or more images run as a single batch (one processor + one model call).
     try {
       ready ??= load();
       const { processor, model } = await ready;
-      const image = await RawImage.fromBlob(data.blob);
-      const inputs = await processor(image);
+      const images = await Promise.all(data.blobs.map(b => RawImage.fromBlob(b)));
+      const inputs = await processor(images);
       const { image_embeds } = await model(inputs);
-      const vec = Float32Array.from(image_embeds.data);
-      let norm = 0; for (const v of vec) norm += v * v;
-      norm = Math.sqrt(norm) || 1;
-      for (let i = 0; i < vec.length; i++) vec[i] /= norm;
-      postMessage({ type: 'embedded', id: data.id, vec }, [vec.buffer]);
+      const dim = image_embeds.dims.at(-1);
+      const vecs = images.map((_, k) => {
+        const vec = Float32Array.from(image_embeds.data.subarray(k * dim, (k + 1) * dim));
+        let norm = 0; for (const v of vec) norm += v * v;
+        norm = Math.sqrt(norm) || 1;
+        for (let i = 0; i < vec.length; i++) vec[i] /= norm;
+        return vec;
+      });
+      postMessage({ type: 'embedded', id: data.id, vecs }, vecs.map(v => v.buffer));
     } catch (error) {
       postMessage({ type: 'embed-error', id: data.id, message: String(error?.message || error) });
     }

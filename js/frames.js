@@ -6,10 +6,11 @@
 
 /**
  * @param {string} url  video.twimg.com MP4
- * @param {{count?: number, timeoutMs?: number, size?: number}} [opts]
+ * @param {{count?: number, metaTimeoutMs?: number, timeoutMs?: number, size?: number}} [opts]
+ *   metaTimeoutMs: give up early when the moov box is slow (very long videos have multi-MB indexes)
  * @returns {Promise<Blob[]>}  JPEG frames, short side = `size` px (CLIP's processor centre-crops to 224)
  */
-export function grabFrames(url, { count = 4, timeoutMs = 25000, size = 256 } = {}) {
+export function grabFrames(url, { count = 4, metaTimeoutMs = 8000, timeoutMs = 20000, size = 256 } = {}) {
   const video = document.createElement('video');
   video.crossOrigin = 'anonymous';
   video.muted = true;
@@ -27,7 +28,11 @@ export function grabFrames(url, { count = 4, timeoutMs = 25000, size = 256 } = {
 
   const work = (async () => {
     video.src = url;
-    await once('loadedmetadata');
+    let metaTimer;
+    await Promise.race([
+      once('loadedmetadata'),
+      new Promise((_, reject) => { metaTimer = setTimeout(() => reject(new Error(`metadata timed out (${metaTimeoutMs / 1000}s)`)), metaTimeoutMs); }),
+    ]).finally(() => clearTimeout(metaTimer));
     const duration = video.duration;
     if (!Number.isFinite(duration) || duration <= 0) throw new Error('unknown duration');
     const scale = size / Math.min(video.videoWidth || size, video.videoHeight || size);

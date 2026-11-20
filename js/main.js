@@ -9,6 +9,7 @@ import { grabFrames, meanEmbedding } from './frames.js';
 const MIN_POOL = 12;          // embedded videos needed before the first round
 const STREAK_TO_FINISH = 3;   // best ranked #1 this many rounds in a row → show results
 const FRAME_COUNT = 4;        // frames per video in 'frames' mode (averaged with the thumbnail)
+const FRAME_CONCURRENCY = 4;  // videos whose frames are fetched at the same time (network-bound)
 
 const $ = id => document.getElementById(id);
 const ui = {
@@ -17,7 +18,7 @@ const ui = {
   grid: $('grid'), actions: $('actions'), undo: $('undo'), skip: $('skip'), submit: $('submit'),
   empty: $('empty'), results: $('results'), resultsTitle: $('results-title'),
   resultsList: $('results-list'), closeResults: $('close-results'),
-  help: $('help'), helpButton: $('help-button'), embedMode: $('embed-mode'),
+  help: $('help'), helpButton: $('help-button'), embedMode: $('embed-mode'), clipDevice: $('clip-device'),
 };
 
 /** id → {id, title, pageUrl, redirectUrl, thumbnail} */
@@ -27,6 +28,10 @@ const thumbEmb = new Map();
 const frameEmb = new Map();
 const frameFailed = new Set();   // frame grab failed this session (not retried until reload)
 let embedMode = 'thumb';
+let clipDevice = 'wasm';         // 'wasm' (q8, ~90MB) or 'webgpu' (fp32, ~350MB, faster)
+const saveSettings = () => db.kvSet('settings', { embedMode, clipDevice });
+/** Embeddings are stored per CLIP backend (q8 WASM vs fp32 WebGPU give different vectors). */
+const storeOf = kind => (clipDevice === 'webgpu' ? `${kind}Gpu` : kind);
 /** id → Float32Array for the active mode. Only embedded, playable videos: this IS the candidate pool. */
 let pool = new Map();
 let embedder = null;
@@ -57,9 +62,11 @@ async function boot() {
   if (saved) session = { ...newSession(), ...saved };
   const settings = await db.kvGet('settings');
   embedMode = settings?.embedMode === 'frames' ? 'frames' : 'thumb';
+  clipDevice = settings?.clipDevice === 'webgpu' ? 'webgpu' : 'wasm';
   ui.embedMode.value = embedMode;
-  for (const e of await db.getAll('embeddings')) thumbEmb.set(e.id, e.vec);
-  for (const e of await db.getAll('frameEmbeddings')) frameEmb.set(e.id, e.vec);
+  ui.clipDevice.value = clipDevice;
+  for (const e of await db.getAll(storeOf('embeddings'))) thumbEmb.set(e.id, e.vec);
+  for (const e of await db.getAll(storeOf('frameEmbeddings'))) frameEmb.set(e.id, e.vec);
   buildPool();
   ui.query.value = session.query || '';
   setStatus(videos.size ? `候補 ${videos.size} 本 / 埋め込み済み ${pool.size} 本` : '「プール取得」で候補を集めてください', videos.size ? pool.size / videos.size : 0);
@@ -98,9 +105,16 @@ function refreshForMode() {
   } else nextRound();
 }
 
+// The CLIP backend is fixed when the worker loads the model, so a change takes effect after a reload.
+ui.clipDevice.addEventListener('change', async () => {
+  clipDevice = ui.clipDevice.value;
+  await saveSettings();
+  location.reload();
+});
+
 ui.embedMode.addEventListener('change', async () => {
   embedMode = ui.embedMode.value;
-  await db.kvSet('settings', { embedMode });
+  await saveSettings();
   refreshForMode();
   if (pool.size >= MIN_POOL) setStatus(`${embedMode === 'frames' ? 'サムネ＋動画フレーム' : 'サムネのみ'}に切り替えました（プール ${pool.size} 本）`);
   startEmbedding();
@@ -133,8 +147,16 @@ function startEmbedding() {
   if (embedding) return;
   embedding = true;
   embedder ??= new Embedder({
+    device: clipDevice,
     onModelProgress: p => setStatus(`CLIP モデルを読み込み中… ${p.file ?? ''} ${Math.round(p.progress ?? 0)}%`, (p.progress ?? 0) / 100),
-    onReady: device => setStatus(`CLIP 準備完了（${device}）`),
+    onReady: async device => {
+      if (device === clipDevice) { setStatus(`CLIP 準備完了（${device}）`); return; }
+      // WebGPU was requested but is unavailable: vectors would be q8, so switch the setting (and stores) to WASM.
+      setStatus('WebGPU が使えないため WASM に切り替えます…');
+      clipDevice = 'wasm';
+      await saveSettings();
+      location.reload();
+    },
   });
   const mode = embedMode;
   (async () => {
@@ -149,21 +171,21 @@ function startEmbedding() {
         if (!thumb) {
           thumb = await embedder.embedThumbnail(v.id, v.thumbnail);
           thumbEmb.set(v.id, thumb);
-          await db.put('embeddings', { id: v.id, vec: thumb });
+          await db.put(storeOf('embeddings'), { id: v.id, vec: thumb });
           if (embedMode === 'thumb') pool.set(v.id, thumb);
         }
         if (mode === 'frames') {
           // Seek-and-grab a few frames (only the needed byte ranges are downloaded), then average with the thumbnail.
           const frames = await grabFrames(await resolveVideoUrl(v), { count: FRAME_COUNT });
-          const vecs = [];
-          for (const blob of frames) vecs.push(await embedder.embedBlob(blob));
+          const vecs = await embedder.embedBlobs(frames);   // all frames in one batched model call
           const vec = meanEmbedding([thumb, ...vecs]);
           frameEmb.set(v.id, vec);
-          await db.put('frameEmbeddings', { id: v.id, vec });
+          await db.put(storeOf('frameEmbeddings'), { id: v.id, vec });
           if (embedMode === 'frames') pool.set(v.id, vec);
         }
       } catch (error) {
         failed++;
+        console.debug('[gppl] embedding failed', mode, v.id, error?.message);
         if (mode === 'frames') frameFailed.add(v.id);
       }
       done++;
@@ -171,9 +193,9 @@ function startEmbedding() {
       setStatus(`${label} ${done}/${todo.length}（失敗 ${failed}）・プール ${pool.size} 本${embedder.device ? ` · ${embedder.device}` : ''}`, done / todo.length);
       if (ui.grid.hidden && pool.size >= MIN_POOL) nextRound();
     };
-    // Frame grabbing is network-bound: two videos at a time; CLIP calls still run one by one in the worker.
+    // Frame grabbing is network-bound: several videos at a time; CLIP batches still run one by one in the worker.
     let next = 0;
-    await Promise.all(Array.from({ length: mode === 'frames' ? 2 : 1 }, async () => {
+    await Promise.all(Array.from({ length: mode === 'frames' ? FRAME_CONCURRENCY : 1 }, async () => {
       while (next < todo.length && embedMode === mode) await embedOne(todo[next++]);
     }));
     embedding = false;

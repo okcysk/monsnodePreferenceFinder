@@ -24,6 +24,10 @@
       <option value="thumb" selected>サムネのみ</option>
       <option value="frames">サムネ＋動画4フレーム</option>
     </select>
+    <select id="clip-device" title="CLIP の実行方式。変更するとページを再読み込みします">
+      <option value="wasm" selected>CLIP: WASM（約90MB）</option>
+      <option value="webgpu">CLIP: WebGPU（約350MB・速い）</option>
+    </select>
     <button id="start" class="primary">プール取得</button>
   </div>
   <div class="status">

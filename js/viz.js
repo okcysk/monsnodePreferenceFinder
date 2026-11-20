@@ -20,9 +20,12 @@ async function load() {
   const videos = new Map((await db.getAll('videos')).map(v => [v.id, v]));
   const session = await db.kvGet('session') || { pairs: [], shown: [], broken: [] };
   const broken = new Set(session.broken || []);
-  const mode = (await db.kvGet('settings'))?.embedMode === 'frames' ? 'frames' : 'thumb';
-  const embs = (await db.getAll(mode === 'frames' ? 'frameEmbeddings' : 'embeddings')).filter(e => videos.has(e.id) && !broken.has(e.id));
-  document.querySelector('.brand small').textContent = `CLIP 512D (${mode === 'frames' ? 'サムネ＋4フレーム' : 'サムネ'}) → PCA 48D → 2D`;
+  const settings = await db.kvGet('settings');
+  const mode = settings?.embedMode === 'frames' ? 'frames' : 'thumb';
+  const gpu = settings?.clipDevice === 'webgpu';
+  const store = (mode === 'frames' ? 'frameEmbeddings' : 'embeddings') + (gpu ? 'Gpu' : '');
+  const embs = (await db.getAll(store)).filter(e => videos.has(e.id) && !broken.has(e.id));
+  document.querySelector('.brand small').textContent = `CLIP 512D (${mode === 'frames' ? 'サムネ＋4フレーム' : 'サムネ'} · ${gpu ? 'WebGPU' : 'WASM'}) → PCA 48D → 2D`;
   if (embs.length < 3) { setStatus('埋め込み済みの動画がまだありません（3本以上必要）'); return; }
 
   const pool = new Map(embs.map(e => [e.id, e.vec]));
