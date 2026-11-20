@@ -2,6 +2,8 @@
 
 4本の動画を同時に再生し、好きな順に 1〜4位 を付けるだけで、Pairwise GP 選好学習（GPPL）が一番好きな動画を探すウェブサイトです。インストールは不要で、学習と CLIP 埋め込みはすべてブラウザ内で行います。
 
+**公開URL: https://okcysk.github.io/monsnodePreferenceFinder/**
+
 Chrome 拡張版（`../monsnodeGPPL/`）と中身は同じです。違いは monsnode の読み方だけです。
 
 | 処理 | ウェブ版での方法 |
