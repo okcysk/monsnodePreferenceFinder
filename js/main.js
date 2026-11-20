@@ -4,9 +4,11 @@ import { Embedder } from './embed.js';
 import { computeRound, topSeen } from './engine.js';
 import { rankingToPairs } from './gppl.js';
 import { nextBeta } from './acquisition.js';
+import { grabFrames, meanEmbedding } from './frames.js';
 
 const MIN_POOL = 12;          // embedded videos needed before the first round
 const STREAK_TO_FINISH = 3;   // best ranked #1 this many rounds in a row → show results
+const FRAME_COUNT = 4;        // frames per video in 'frames' mode (averaged with the thumbnail)
 
 const $ = id => document.getElementById(id);
 const ui = {
@@ -15,13 +17,18 @@ const ui = {
   grid: $('grid'), actions: $('actions'), undo: $('undo'), skip: $('skip'), submit: $('submit'),
   empty: $('empty'), results: $('results'), resultsTitle: $('results-title'),
   resultsList: $('results-list'), closeResults: $('close-results'),
-  help: $('help'), helpButton: $('help-button'),
+  help: $('help'), helpButton: $('help-button'), embedMode: $('embed-mode'),
 };
 
 /** id → {id, title, pageUrl, redirectUrl, thumbnail} */
 const videos = new Map();
-/** id → Float32Array. Only embedded, playable videos: this IS the candidate pool. */
-const pool = new Map();
+/** Embedding stores per mode: 'thumb' = CLIP of the thumbnail, 'frames' = mean of thumbnail + FRAME_COUNT video frames. */
+const thumbEmb = new Map();
+const frameEmb = new Map();
+const frameFailed = new Set();   // frame grab failed this session (not retried until reload)
+let embedMode = 'thumb';
+/** id → Float32Array for the active mode. Only embedded, playable videos: this IS the candidate pool. */
+let pool = new Map();
 let embedder = null;
 let embedding = false;
 let lastRound = null;   // result of computeRound for the current screen
@@ -48,8 +55,12 @@ async function boot() {
   for (const v of await db.getAll('videos')) videos.set(v.id, v);
   const saved = await db.kvGet('session');
   if (saved) session = { ...newSession(), ...saved };
-  const broken = new Set(session.broken);
-  for (const e of await db.getAll('embeddings')) if (videos.has(e.id) && !broken.has(e.id)) pool.set(e.id, e.vec);
+  const settings = await db.kvGet('settings');
+  embedMode = settings?.embedMode === 'frames' ? 'frames' : 'thumb';
+  ui.embedMode.value = embedMode;
+  for (const e of await db.getAll('embeddings')) thumbEmb.set(e.id, e.vec);
+  for (const e of await db.getAll('frameEmbeddings')) frameEmb.set(e.id, e.vec);
+  buildPool();
   ui.query.value = session.query || '';
   setStatus(videos.size ? `候補 ${videos.size} 本 / 埋め込み済み ${pool.size} 本` : '「プール取得」で候補を集めてください', videos.size ? pool.size / videos.size : 0);
   if (pool.size < videos.size) startEmbedding();
@@ -58,8 +69,43 @@ async function boot() {
     if (session.pairs.length) lastRound = computeRound(roundArgs());
     showRound(session.current);
   } else if (pool.size >= MIN_POOL) nextRound();
+  else if (videos.size) waitForPool();
   updateHeader();
 }
+
+/** Candidate pool for the active embedding mode. A new Map each time so the PCA cache is rebuilt. */
+function buildPool() {
+  const broken = new Set(session.broken);
+  const src = embedMode === 'frames' ? frameEmb : thumbEmb;
+  pool = new Map([...src].filter(([id]) => videos.has(id) && !broken.has(id)));
+}
+
+function waitForPool() {
+  ui.grid.replaceChildren();
+  ui.grid.hidden = true;
+  ui.actions.hidden = true;
+  ui.empty.hidden = false;
+  lastRound = null;
+  setStatus(`${embedMode === 'frames' ? 'サムネ＋フレーム' : 'サムネ'}の埋め込みが ${MIN_POOL} 本たまるとラウンドを始めます（現在 ${pool.size} 本）`);
+}
+
+/** Switch the embedding used by GPPL. Comparisons are kept: they are about videos, not features. */
+function refreshForMode() {
+  buildPool();
+  if (pool.size < MIN_POOL) { waitForPool(); return; }
+  if (!ui.grid.hidden && session.current.length === 4 && session.current.every(id => pool.has(id))) {
+    lastRound = session.pairs.length ? computeRound(roundArgs()) : null;   // same four stay on screen
+  } else nextRound();
+}
+
+ui.embedMode.addEventListener('change', async () => {
+  embedMode = ui.embedMode.value;
+  await db.kvSet('settings', { embedMode });
+  refreshForMode();
+  if (pool.size >= MIN_POOL) setStatus(`${embedMode === 'frames' ? 'サムネ＋動画フレーム' : 'サムネのみ'}に切り替えました（プール ${pool.size} 本）`);
+  startEmbedding();
+  updateHeader();
+});
 
 // ---------- pool collection ----------
 ui.start.addEventListener('click', async () => {
@@ -90,25 +136,50 @@ function startEmbedding() {
     onModelProgress: p => setStatus(`CLIP モデルを読み込み中… ${p.file ?? ''} ${Math.round(p.progress ?? 0)}%`, (p.progress ?? 0) / 100),
     onReady: device => setStatus(`CLIP 準備完了（${device}）`),
   });
+  const mode = embedMode;
   (async () => {
     const broken = new Set(session.broken);
-    const todo = [...videos.values()].filter(v => !pool.has(v.id) && !broken.has(v.id) && v.thumbnail);
+    const src = mode === 'frames' ? frameEmb : thumbEmb;
+    const todo = [...videos.values()].filter(v => !src.has(v.id) && !broken.has(v.id) && v.thumbnail && !(mode === 'frames' && frameFailed.has(v.id)));
     let done = 0, failed = 0;
-    for (const v of todo) {
+    const label = mode === 'frames' ? 'サムネ＋フレーム埋め込み中' : '埋め込み中';
+    const embedOne = async v => {
       try {
-        const vec = await embedder.embedThumbnail(v.id, v.thumbnail);
-        pool.set(v.id, vec);
-        await db.put('embeddings', { id: v.id, vec });
+        let thumb = thumbEmb.get(v.id);
+        if (!thumb) {
+          thumb = await embedder.embedThumbnail(v.id, v.thumbnail);
+          thumbEmb.set(v.id, thumb);
+          await db.put('embeddings', { id: v.id, vec: thumb });
+          if (embedMode === 'thumb') pool.set(v.id, thumb);
+        }
+        if (mode === 'frames') {
+          // Seek-and-grab a few frames (only the needed byte ranges are downloaded), then average with the thumbnail.
+          const frames = await grabFrames(await resolveVideoUrl(v), { count: FRAME_COUNT });
+          const vecs = [];
+          for (const blob of frames) vecs.push(await embedder.embedBlob(blob));
+          const vec = meanEmbedding([thumb, ...vecs]);
+          frameEmb.set(v.id, vec);
+          await db.put('frameEmbeddings', { id: v.id, vec });
+          if (embedMode === 'frames') pool.set(v.id, vec);
+        }
       } catch (error) {
         failed++;
+        if (mode === 'frames') frameFailed.add(v.id);
       }
       done++;
-      setStatus(`埋め込み中 ${done}/${todo.length}（失敗 ${failed}）・プール ${pool.size} 本${embedder.device ? ` · ${embedder.device}` : ''}`, done / todo.length);
-      if (!session.current.length && pool.size >= MIN_POOL) nextRound();
-    }
+      if (embedMode !== mode) return;   // switched away: the new mode owns the status line
+      setStatus(`${label} ${done}/${todo.length}（失敗 ${failed}）・プール ${pool.size} 本${embedder.device ? ` · ${embedder.device}` : ''}`, done / todo.length);
+      if (ui.grid.hidden && pool.size >= MIN_POOL) nextRound();
+    };
+    // Frame grabbing is network-bound: two videos at a time; CLIP calls still run one by one in the worker.
+    let next = 0;
+    await Promise.all(Array.from({ length: mode === 'frames' ? 2 : 1 }, async () => {
+      while (next < todo.length && embedMode === mode) await embedOne(todo[next++]);
+    }));
     embedding = false;
-    if (failed && pool.size < MIN_POOL) setStatus(`サムネイルを読み込めませんでした（失敗 ${failed}）。時間をおいて再度「プール取得」を試してください。`);
-    else setStatus(`候補 ${videos.size} 本 / 埋め込み済み ${pool.size} 本`, 1);
+    if (embedMode !== mode) { startEmbedding(); return; }   // mode switched mid-way: continue for the new mode
+    if (failed && pool.size < MIN_POOL) setStatus(`埋め込みに失敗しました（失敗 ${failed}）。時間をおいて再度「プール取得」を試してください。`);
+    else setStatus(`候補 ${videos.size} 本 / 埋め込み済み ${pool.size} 本（${mode === 'frames' ? 'サムネ＋フレーム' : 'サムネ'}）${failed ? `・失敗 ${failed}` : ''}`, 1);
   })();
 }
 

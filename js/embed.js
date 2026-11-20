@@ -3,6 +3,7 @@ export class Embedder {
   constructor({ onModelProgress, onReady, device = 'wasm' } = {}) {
     this.worker = new Worker(new URL('./embed-worker.js', import.meta.url), { type: 'module' });
     this.pending = new Map();
+    this.seq = 0;
     this.device = null;
     this.worker.onmessage = ({ data }) => {
       if (data.type === 'model-progress') onModelProgress?.(data);
@@ -21,10 +22,15 @@ export class Embedder {
   async embedThumbnail(id, url) {
     const res = await fetch(url, { credentials: 'omit' });
     if (!res.ok) throw new Error(`Thumbnail ${res.status}`);
-    const blob = await res.blob();
+    return this.embedBlob(await res.blob());
+  }
+
+  /** Embed any image blob (thumbnail or a video frame). Requests are queued in the worker in order. */
+  embedBlob(blob) {
+    const key = `r${++this.seq}`;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.worker.postMessage({ type: 'embed', id, blob });
+      this.pending.set(key, { resolve, reject });
+      this.worker.postMessage({ type: 'embed', id: key, blob });
     });
   }
 }

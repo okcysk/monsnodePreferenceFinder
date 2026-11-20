@@ -1,6 +1,7 @@
-// Minimal IndexedDB wrapper. Stores: videos (id), embeddings (id → Float32Array), kv (session state).
+// Minimal IndexedDB wrapper. Stores: videos (id), embeddings (thumbnail CLIP, id → Float32Array),
+// frameEmbeddings (thumbnail + video frames, averaged), kv (session state, settings).
 const DB_NAME = 'monsnode-gppl';
-const VERSION = 1;
+const VERSION = 2;
 let dbPromise;
 
 function open() {
@@ -11,6 +12,7 @@ function open() {
       if (!db.objectStoreNames.contains('videos')) db.createObjectStore('videos', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('embeddings')) db.createObjectStore('embeddings', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
+      if (!db.objectStoreNames.contains('frameEmbeddings')) db.createObjectStore('frameEmbeddings', { keyPath: 'id' });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
