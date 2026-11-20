@@ -28,3 +28,11 @@
 .hist canvas{width:100%;height:70px;display:block}
 .hist p{margin:4px 0 0;color:var(--muted);font-size:11px}
 @media(max-width:900px){.viz{right:0;bottom:40%}.panel{top:60%;width:auto;left:0;border-left:0;border-top:1px solid var(--line)}}
+/* selection panel: deselect button + video frames */
+.panel-head{display:flex;justify-content:flex-end;margin-bottom:8px}
+.panel-head .deselect{padding:4px 10px;font-size:12px}
+.frames{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
+.frames figure{position:relative;margin:0}
+.frames img{display:block;width:100%;aspect-ratio:16/10;object-fit:cover;border-radius:6px;background:#000}
+.frames figcaption{position:absolute;right:4px;bottom:4px;padding:1px 5px;border-radius:4px;background:#000b;color:#ddd;font:600 10px system-ui,sans-serif;font-variant-numeric:tabular-nums}
+.frames-note{grid-column:1/-1;margin:0;color:var(--muted);font-size:12px}

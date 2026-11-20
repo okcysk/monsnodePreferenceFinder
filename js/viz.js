@@ -4,6 +4,8 @@ import * as db from './db.js';
 import { pcaProject } from './pca.js';
 import { TSNE } from './tsne.js';
 import { computeRound } from './engine.js';
+import { resolveVideoUrl } from './scraper.js';
+import { grabFrames } from './frames.js';
 
 const $ = id => document.getElementById(id);
 const canvas = $('canvas'), ctx = canvas.getContext('2d');
@@ -12,6 +14,9 @@ const ui = { proj: $('proj'), color: $('color'), size: $('size'), fit: $('fit'),
 let items = [];        // [{id, video, vec, pca48, x, y, img, mu, sigma, shown}]
 let view = { scale: 1, tx: 0, ty: 0 };
 let hover = null, selected = null, tsneRun = 0;
+const placeholderHTML = ui.panel.innerHTML;   // restored when the selection is cleared
+const frameCache = new Map();                  // id → Promise<Blob[]> (frames are fetched on demand)
+let frameURLs = [];
 let muMax = 1;
 
 function setStatus(t, f = null) { ui.status.textContent = t; if (f !== null) ui.meter.style.width = `${Math.round(f * 100)}%`; }
@@ -156,11 +161,53 @@ function select(it) {
   draw();
 }
 
+function clearSelection() {
+  if (!selected) return;
+  selected = null;
+  releaseFrames();
+  ui.panel.innerHTML = placeholderHTML;
+  draw();
+}
+
+function releaseFrames() { frameURLs.forEach(u => URL.revokeObjectURL(u)); frameURLs = []; }
+
+const fmtTime = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+/** Show the 4 frames at the same positions the 'サムネ＋4フレーム' embedding uses (fetched on demand, cached). */
+async function showFrames(it) {
+  const box = ui.panel.querySelector('.frames');
+  box.innerHTML = '<p class="frames-note">フレームを読み込み中…</p>';
+  if (!frameCache.has(it.id)) {
+    const p = resolveVideoUrl(it.video).then(url => grabFrames(url, { count: 4, size: 320 }));
+    frameCache.set(it.id, p);
+    p.catch(() => frameCache.delete(it.id));
+  }
+  try {
+    const blobs = await frameCache.get(it.id);
+    if (selected?.it !== it) return;            // another video was selected meanwhile
+    releaseFrames();
+    frameURLs = blobs.map(b => URL.createObjectURL(b));
+    box.replaceChildren(...blobs.map((b, i) => {
+      const fig = document.createElement('figure');
+      fig.innerHTML = '<img alt=""><figcaption></figcaption>';
+      fig.querySelector('img').src = frameURLs[i];
+      fig.querySelector('figcaption').textContent = Number.isFinite(b.time) ? fmtTime(b.time) : `#${i + 1}`;
+      return fig;
+    }));
+  } catch (error) {
+    if (selected?.it !== it) return;
+    box.innerHTML = `<p class="frames-note">フレームを読み込めませんでした（${error.message}）</p>`;
+  }
+}
+
 function renderPanel() {
   const { it, nn, all } = selected;
   const fmt = (m, s) => m === null ? 'μ —（未学習）' : `μ ${m.toFixed(2)} ± ${s.toFixed(2)}`;
   ui.panel.innerHTML = `
+    <div class="panel-head"><button type="button" class="ghost deselect" title="選択解除 (Esc)">選択解除 ×</button></div>
     <div class="sel"><img alt=""><div class="t"></div><div class="s"></div><a target="_blank" rel="noopener">Open ↗</a></div>
+    <h3 style="margin-top:14px">動画フレーム（4区間の中央）</h3>
+    <div class="frames"></div>
     <h3 style="margin-top:14px">512次元空間の近傍 Top 12（コサイン類似度）</h3>
     <div class="nn"></div>
     <div class="hist"><h3>この動画と全候補の類似度分布</h3><canvas width="600" height="140"></canvas><p></p></div>`;
@@ -168,6 +215,8 @@ function renderPanel() {
   ui.panel.querySelector('.sel .t').textContent = it.video.title;
   ui.panel.querySelector('.sel .s').textContent = `${fmt(it.mu, it.sigma)} · ${it.shown ? '表示済み' : '未表示'}`;
   ui.panel.querySelector('.sel a').href = it.video.pageUrl;
+  ui.panel.querySelector('.deselect').addEventListener('click', clearSelection);
+  showFrames(it);
   ui.panel.querySelector('.nn').replaceChildren(...nn.map(({ it: o, sim }) => {
     const b = document.createElement('button');
     b.innerHTML = '<img alt=""><span><b></b><em></em></span>';
@@ -216,7 +265,7 @@ canvas.addEventListener('pointermove', e => {
 });
 canvas.addEventListener('pointerup', e => {
   canvas.classList.remove('dragging');
-  if (drag && !drag.moved) { const it = pick(e.offsetX, e.offsetY); if (it) select(it); }
+  if (drag && !drag.moved) { const it = pick(e.offsetX, e.offsetY); if (it) select(it); else clearSelection(); }
   drag = null;
 });
 canvas.addEventListener('pointerleave', () => { hover = null; ui.tip.hidden = true; draw(); });
@@ -229,6 +278,7 @@ canvas.addEventListener('wheel', e => {
   draw();
 }, { passive: false });
 
+addEventListener('keydown', e => { if (e.key === 'Escape') clearSelection(); });
 ui.proj.addEventListener('change', layout);
 ui.color.addEventListener('change', draw);
 ui.size.addEventListener('input', draw);

@@ -43,10 +43,13 @@ export function grabFrames(url, { count = 4, metaTimeoutMs = 8000, timeoutMs = 2
     const blobs = [];
     for (let i = 0; i < count; i++) {
       // centres of `count` equal segments: avoids black intro/outro frames at 0% / 100%
-      video.currentTime = duration * (i + 0.5) / count;
+      const time = duration * (i + 0.5) / count;
+      video.currentTime = time;
       await once('seeked');
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      blobs.push(await new Promise((resolve, reject) => canvas.toBlob(b => b ? resolve(b) : reject(new Error('toBlob failed')), 'image/jpeg', 0.9)));
+      const blob = await new Promise((resolve, reject) => canvas.toBlob(b => b ? resolve(b) : reject(new Error('toBlob failed')), 'image/jpeg', 0.9));
+      blob.time = time;   // seconds into the video (shown by the map)
+      blobs.push(blob);
     }
     return blobs;
   })();
