@@ -36,3 +36,18 @@
 .frames img{display:block;width:100%;aspect-ratio:16/10;object-fit:cover;border-radius:6px;background:#000}
 .frames figcaption{position:absolute;right:4px;bottom:4px;padding:1px 5px;border-radius:4px;background:#000b;color:#ddd;font:600 10px system-ui,sans-serif;font-variant-numeric:tabular-nums}
 .frames-note{grid-column:1/-1;margin:0;color:var(--muted);font-size:12px}
+/* zero-shot tags & text search */
+.setup #text-query{width:220px}
+.legend .tag-grad{background:linear-gradient(90deg,#2a2c33,#c4f26a)}
+.tag-chips{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0}
+.chip{padding:2px 7px;border-radius:999px;border:1px solid #454751;color:var(--muted);font:600 11px system-ui,sans-serif;font-variant-numeric:tabular-nums}
+.chip.on{border-color:var(--accent);color:var(--accent);background:#c4f26a1a}
+.tag-editor-inner{width:min(900px,100%)}
+.tag-help{color:var(--muted);font-size:12px;margin:8px 0 10px}
+.tag-help code{color:var(--text)}
+.tag-row{display:grid;grid-template-columns:120px 1fr 1fr 32px;gap:6px;margin-bottom:6px;align-items:center}
+.tag-row input{width:100%;min-width:0}
+.tag-head span{color:var(--muted);font-size:11px}
+.tag-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
+@media(max-width:1100px){.setup #text-query{width:140px}}
+@media(max-width:700px){.tag-row{grid-template-columns:1fr 32px}.tag-row .tp,.tag-row .tg{grid-column:1/2}.tag-head{display:none}}

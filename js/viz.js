@@ -6,10 +6,13 @@ import { TSNE } from './tsne.js';
 import { computeRound } from './engine.js';
 import { resolveVideoUrl } from './scraper.js';
 import { grabFrames } from './frames.js';
+import { Embedder } from './embed.js';
+import { DEFAULT_TAGS, scoreTags, scoreText } from './tags.js';
 
 const $ = id => document.getElementById(id);
 const canvas = $('canvas'), ctx = canvas.getContext('2d');
-const ui = { proj: $('proj'), color: $('color'), size: $('size'), fit: $('fit'), status: $('status'), meter: $('meter-fill'), legend: $('legend'), tip: $('tip'), panel: $('panel') };
+const ui = { proj: $('proj'), color: $('color'), size: $('size'), fit: $('fit'), status: $('status'), meter: $('meter-fill'), legend: $('legend'), tip: $('tip'), panel: $('panel'),
+  tagEdit: $('tag-edit'), textQuery: $('text-query'), tagEditor: $('tag-editor'), tagRows: $('tag-rows') };
 
 let items = [];        // [{id, video, vec, pca48, x, y, img, mu, sigma, shown}]
 let view = { scale: 1, tx: 0, ty: 0 };
@@ -18,6 +21,16 @@ const placeholderHTML = ui.panel.innerHTML;   // restored when the selection is 
 const frameCache = new Map();                  // id → Promise<Blob[]> (frames are fetched on demand)
 let frameURLs = [];
 let muMax = 1;
+// Zero-shot tags / text search (CLIP text tower, loaded on first use)
+let tags = DEFAULT_TAGS.map(t => ({ ...t }));
+let tagScores = [];        // per tag: Float32Array aligned with items (probability 0–1)
+let search = null;         // { query, score: Float32Array (cosine), pct: Float32Array (rank 0–1) }
+let textEmbedder = null;
+const getTextEmbedder = () => textEmbedder ??= new Embedder({
+  preload: false,
+  onModelProgress: p => setStatus(`テキストモデルを読み込み中… ${Math.round(p.progress ?? 0)}%`, (p.progress ?? 0) / 100),
+});
+const embedTexts = texts => getTextEmbedder().embedTexts(texts);
 
 function setStatus(t, f = null) { ui.status.textContent = t; if (f !== null) ui.meter.style.width = `${Math.round(f * 100)}%`; }
 
@@ -46,11 +59,117 @@ async function load() {
     img.onload = draw;
     return { id: e.id, video: videos.get(e.id), vec: e.vec, pca48: pca48[i], x: 0, y: 0, img, mu: mu?.get(e.id) ?? null, sigma: sigma?.get(e.id) ?? null, shown: shown.has(e.id) };
   });
+  items.forEach((it, i) => { it.idx = i; });
   muMax = Math.max(1e-6, ...items.map(it => Math.abs(it.mu ?? 0)));
   setStatus(`${items.length} 本 · 512次元 → PCA ${pca48[0].length}次元 · 比較 ${pairs.length} 件`, 1);
   window.__viz = { count: items.length, dim: embs[0].vec.length, pcaDim: pca48[0].length, pairs: pairs.length };
   layout();
+  const savedTags = await db.kvGet('tags');
+  if (Array.isArray(savedTags) && savedTags.length) tags = savedTags;
+  computeTags();
 }
+
+// ---------- tags / text search ----------
+async function computeTags() {
+  refreshColorOptions();
+  if (!tags.length) { tagScores = []; draw(); return; }
+  try {
+    const t0 = performance.now();
+    tagScores = await scoreTags(tags, items.map(it => it.vec), embedTexts);
+    setStatus(`タグを計算しました（${tags.length} 個 · ${Math.round(performance.now() - t0)} ms）`, 1);
+    window.__vizTags = tags.map((t, k) => ({ name: t.name, count: tagScores[k] ? tagScores[k].filter(p => p >= 0.5).length : null }));
+  } catch (error) {
+    setStatus(`タグを計算できませんでした: ${error.message}`);
+  }
+  refreshColorOptions();
+  if (selected) fillChips(selected.it);
+  draw();
+}
+
+async function runSearch(query) {
+  query = query.trim();
+  if (!query) { search = null; refreshColorOptions(); draw(); return; }
+  try {
+    const score = await scoreText(query, items.map(it => it.vec), embedTexts);
+    const order = [...score.keys()].sort((a, b) => score[a] - score[b]);
+    const pct = new Float32Array(score.length);
+    order.forEach((i, r) => { pct[i] = r / Math.max(1, order.length - 1); });
+    search = { query, score, pct };
+    refreshColorOptions();
+    ui.color.value = 'search';
+    setStatus(`「${query}」に近い動画を強調しました（上位10%）`, 1);
+  } catch (error) {
+    setStatus(`テキスト検索に失敗しました: ${error.message}`);
+  }
+  draw();
+}
+
+function refreshColorOptions() {
+  const current = ui.color.value;
+  const base = [['mu', '好き度 μ'], ['shown', '表示済み'], ['none', 'なし']];
+  const extra = tags.map((t, k) => [`tag:${k}`, `タグ: ${t.name}${tagScores[k] ? '' : '（計算中）'}`]);
+  if (search) extra.push(['search', `テキスト: ${search.query}`]);
+  ui.color.replaceChildren(...[...base, ...extra].map(([v, label]) => new Option(label, v)));
+  ui.color.value = [...base, ...extra].some(([v]) => v === current) ? current : 'mu';
+}
+
+/** 0–1 score of an item for the current colour mode, or null when the mode is not score-based. */
+function scoreOf(it, mode) {
+  if (mode.startsWith('tag:')) return tagScores[Number(mode.slice(4))]?.[it.idx] ?? null;
+  if (mode === 'search' && search) return search.pct[it.idx];
+  return null;
+}
+const scoreThreshold = mode => (mode === 'search' ? 0.9 : 0.5);
+
+function scoreColor(p) {
+  const lerp = (a, b) => Math.round(a + (b - a) * p);
+  return `rgb(${lerp(42, 196)},${lerp(44, 242)},${lerp(51, 106)})`;
+}
+
+function fillChips(it) {
+  const box = ui.panel.querySelector('.tag-chips');
+  if (!box) return;
+  box.replaceChildren(...tags.map((t, k) => {
+    const p = tagScores[k]?.[it.idx];
+    const chip = document.createElement('span');
+    chip.className = `chip${p >= 0.5 ? ' on' : ''}`;
+    chip.textContent = p === undefined ? `${t.name} …` : `${t.name} ${Math.round(p * 100)}%`;
+    chip.title = `${t.pos}\n vs \n${t.neg}`;
+    return chip;
+  }));
+}
+
+// tag editor
+function renderTagRows(list) {
+  ui.tagRows.replaceChildren(...list.map(t => {
+    const row = document.createElement('div');
+    row.className = 'tag-row';
+    row.innerHTML = `<input class="tn" placeholder="タグ名（例: アニメ）"><input class="tp" placeholder="当てはまる説明（英語、| で複数）"><input class="tg" placeholder="対比する説明（英語、| で複数）"><button type="button" class="ghost del" title="削除">×</button>`;
+    row.querySelector('.tn').value = t.name; row.querySelector('.tp').value = t.pos; row.querySelector('.tg').value = t.neg;
+    row.querySelector('.del').addEventListener('click', () => row.remove());
+    return row;
+  }));
+}
+const readTagRows = () => [...ui.tagRows.querySelectorAll('.tag-row')]
+  .map(r => ({ name: r.querySelector('.tn').value.trim(), pos: r.querySelector('.tp').value.trim(), neg: r.querySelector('.tg').value.trim() }))
+  .filter(t => t.name && t.pos && t.neg);
+
+ui.tagEdit.addEventListener('click', () => { renderTagRows(tags); ui.tagEditor.hidden = false; });
+ui.tagEditor.addEventListener('click', async e => {
+  const b = e.target.closest('button');
+  if (e.target === ui.tagEditor || b?.classList.contains('close')) ui.tagEditor.hidden = true;
+  else if (b?.classList.contains('add')) { renderTagRows([...readTagRows(), { name: '', pos: '', neg: '' }]); ui.tagRows.lastElementChild?.querySelector('.tn').focus(); }
+  else if (b?.classList.contains('defaults')) renderTagRows(DEFAULT_TAGS);
+  else if (b?.classList.contains('save')) {
+    tags = readTagRows();
+    await db.kvSet('tags', tags);
+    ui.tagEditor.hidden = true;
+    tagScores = [];
+    computeTags();
+  }
+});
+ui.textQuery.addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(ui.textQuery.value); });
+ui.textQuery.addEventListener('search', () => { if (!ui.textQuery.value) runSearch(''); });
 
 // ---------- layout ----------
 function layout() {
@@ -103,14 +222,18 @@ function draw() {
   ctx.clearRect(0, 0, w, h);
   const size = Number(ui.size.value), mode = ui.color.value;
   const neighbours = selected ? new Set(selected.nn.map(n => n.it.id)) : null;
-  // draw low-μ first so favourites sit on top
-  const order = items.slice().sort((a, b) => (a.mu ?? -1e9) - (b.mu ?? -1e9));
+  // draw low scores first so the interesting ones sit on top
+  const scored = scoreOf(items[0] ?? {}, mode) !== null;
+  const order = items.slice().sort(scored ? (a, b) => scoreOf(a, mode) - scoreOf(b, mode) : (a, b) => (a.mu ?? -1e9) - (b.mu ?? -1e9));
   for (const it of order) {
     const [sx, sy] = toScreen(it);
     if (sx < -size || sy < -size || sx > w + size || sy > h + size) continue;
     const bw = size, bh = size * 0.66;
-    ctx.globalAlpha = neighbours && !neighbours.has(it.id) && it !== selected.it ? 0.25 : 1;
+    const score = scoreOf(it, mode);
+    const dimByScore = score !== null && score < scoreThreshold(mode) && it !== selected?.it;
+    ctx.globalAlpha = (neighbours && !neighbours.has(it.id) && it !== selected.it) ? 0.25 : dimByScore ? 0.3 : 1;
     let border = '#2a2c33';
+    if (score !== null) border = scoreColor(score);
     if (mode === 'mu' && it.mu !== null) border = muColor(it.mu);
     if (mode === 'shown') border = it.shown ? '#c4f26a' : '#2a2c33';
     ctx.fillStyle = border;
@@ -135,8 +258,17 @@ function drawLegend(mode) {
       : 'まだ比較がないため μ はありません（1ラウンド以上回答すると色が付きます）';
   } else if (mode === 'shown') {
     ui.legend.innerHTML = `<span class="sw" style="background:#c4f26a"></span>表示済み ${items.filter(i => i.shown).length} 本　<span class="sw" style="background:#2a2c33"></span>未表示`;
+  } else if (mode.startsWith('tag:')) {
+    const k = Number(mode.slice(4)), t = tags[k], s = tagScores[k];
+    ui.legend.innerHTML = s
+      ? `「${escapeHTML(t.name)}」らしさ（CLIP ゼロショット・目安）<div class="bar-grad tag-grad"></div><div class="row"><span>0%</span><span>50%（未満は薄く）</span><span>100%</span></div>該当 ${s.filter(p => p >= 0.5).length} / ${s.length} 本`
+      : 'タグを計算中…（初回はテキストモデル約65MBを読み込みます）';
+  } else if (mode === 'search' && search) {
+    ui.legend.innerHTML = `「${escapeHTML(search.query)}」との類似度<div class="bar-grad tag-grad"></div><div class="row"><span>低</span><span>上位10%を強調</span><span>高</span></div>`;
   } else ui.legend.innerHTML = '';
 }
+
+function escapeHTML(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 // ---------- interaction ----------
 function pick(mx, my) {
@@ -205,7 +337,7 @@ function renderPanel() {
   const fmt = (m, s) => m === null ? 'μ —（未学習）' : `μ ${m.toFixed(2)} ± ${s.toFixed(2)}`;
   ui.panel.innerHTML = `
     <div class="panel-head"><button type="button" class="ghost deselect" title="選択解除 (Esc)">選択解除 ×</button></div>
-    <div class="sel"><img alt=""><div class="t"></div><div class="s"></div><a target="_blank" rel="noopener">Open ↗</a></div>
+    <div class="sel"><img alt=""><div class="t"></div><div class="s"></div><div class="tag-chips"></div><a target="_blank" rel="noopener">Open ↗</a></div>
     <h3 style="margin-top:14px">動画フレーム（4区間の中央）</h3>
     <div class="frames"></div>
     <h3 style="margin-top:14px">512次元空間の近傍 Top 12（コサイン類似度）</h3>
@@ -216,6 +348,7 @@ function renderPanel() {
   ui.panel.querySelector('.sel .s').textContent = `${fmt(it.mu, it.sigma)} · ${it.shown ? '表示済み' : '未表示'}`;
   ui.panel.querySelector('.sel a').href = it.video.pageUrl;
   ui.panel.querySelector('.deselect').addEventListener('click', clearSelection);
+  fillChips(it);
   showFrames(it);
   ui.panel.querySelector('.nn').replaceChildren(...nn.map(({ it: o, sim }) => {
     const b = document.createElement('button');
@@ -278,7 +411,12 @@ canvas.addEventListener('wheel', e => {
   draw();
 }, { passive: false });
 
-addEventListener('keydown', e => { if (e.key === 'Escape') clearSelection(); });
+addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if (!ui.tagEditor.hidden) { ui.tagEditor.hidden = true; return; }
+  if (e.target instanceof HTMLInputElement) return;
+  clearSelection();
+});
 ui.proj.addEventListener('change', layout);
 ui.color.addEventListener('change', draw);
 ui.size.addEventListener('input', draw);
