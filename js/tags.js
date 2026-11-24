@@ -38,10 +38,12 @@ export const DEFAULT_TAGS = [
   { since: 4, name: '拘束', pos: "ropes tied around a woman's body", neg: 'a nude woman without ropes | a woman wearing lingerie | a woman wearing clothes' },
   { since: 4, name: 'アップ', pos: 'an extreme close-up of skin and genitals', neg: 'a full-body shot of a person | a medium shot showing a face and upper body | a wide shot of a room' },
   { since: 4, name: 'おしっこ', pos: 'a woman urinating | a person peeing', neg: 'a woman taking a shower | a nude woman posing | a wet woman in a bath' },
+  // added in tag set version 5
+  { since: 5, name: '芸術的', pos: 'an artistic fine-art nude photograph with dramatic lighting', neg: 'an amateur smartphone video | a professional porn video | a casual selfie' },
 ];
 
 /** Bumped when default tags are added; saved tag lists get the new defaults once (see mergeNewDefaults). */
-export const DEFAULT_TAGS_VERSION = 4;
+export const DEFAULT_TAGS_VERSION = 5;
 
 /** Append default tags newer than `version` that the saved list does not have (matched by name). */
 export function mergeNewDefaults(saved, version) {

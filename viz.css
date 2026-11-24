@@ -70,7 +70,11 @@
 .quad-head button{white-space:nowrap;flex:none}
 .quad-grid{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:2px}
 .quad-cell{position:relative;min-height:0;background:#08090b;cursor:pointer;outline:2px solid transparent;outline-offset:-2px}
-.quad-cell.audible{outline-color:var(--accent)}
+.quad-cell.active{outline-color:var(--accent)}
+.quad-cell.active .quad-label .key{background:var(--accent);color:var(--accent-ink)}
+.quad-label .snd{flex:none}
+.quad-seek .speed{font-variant-numeric:tabular-nums}
+.quad-cell.empty .quad-seek{display:none}
 .quad-cell video{width:100%;height:100%;object-fit:contain;display:block;background:#000}
 .quad-label{position:absolute;left:8px;right:8px;bottom:30px;display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:8px;background:#08090bbd;font-size:12px}
 .quad-label .key{display:grid;place-items:center;min-width:20px;height:20px;border-radius:6px;background:#24262b;color:var(--accent);font-weight:700;font-size:11px}

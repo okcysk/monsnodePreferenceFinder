@@ -568,87 +568,178 @@ canvas.addEventListener('wheel', e => {
 }, { passive: false });
 
 // ---------- 4-screen player (selected video + neighbours, or a tag's top videos) ----------
-const quad = { list: [], page: 0, badge: null, title: '' };
+// Plays the list from the top: when a video ends (or fails to load) its cell moves on to the next unplayed one.
+// Keys follow the other 4movPlayer players: W/A/S/D・Tab focus, playback keys act on the focused cell, Shift = all four.
+const quad = { list: [], next: 0, badge: null, title: '', active: 0 };
 const fmtClock = t => Number.isFinite(t) ? `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}` : '0:00';
+const QUAD_BINDINGS = {
+  z: { action: 'rewind', value: 5 }, x: { action: 'advance', value: 5 },
+  c: { action: 'rewind', value: 30 }, v: { action: 'advance', value: 30 },
+  f: { action: 'reset', value: 1 }, g: { action: 'speedToggle', value: 2.5 }, h: { action: 'speedToggle', value: 10 },
+  Space: { action: 'toggle' }, m: { action: 'mute' },
+  arrowup: { action: 'volumeUp', value: 0.1 }, arrowdown: { action: 'volumeDown', value: 0.1 },
+};
+const quadCells = () => [...ui.quad.querySelectorAll('.quad-cell')];
+const quadVideos = () => quadCells().map(c => c.querySelector('video'));
 
 function openQuad(list, title, badge) {
-  quad.list = list; quad.page = 0; quad.badge = badge; quad.title = title;
+  quad.list = list; quad.badge = badge; quad.title = title; quad.active = 0;
   ui.quad.hidden = false;
-  renderQuad();
+  ui.quad.querySelector('.quad-grid').replaceChildren(...[0, 1, 2, 3].map(i => quadCell(i)));
+  showFrom(0);
 }
 
 function closeQuad() {
-  for (const v of ui.quad.querySelectorAll('video')) { v.pause(); v.removeAttribute('src'); v.load(); }
+  for (const v of quadVideos()) stopVideo(v);
   ui.quad.querySelector('.quad-grid').replaceChildren();
   ui.quad.hidden = true;
 }
 
-function renderQuad() {
-  const pages = Math.max(1, Math.ceil(quad.list.length / 4));
-  quad.page = Math.max(0, Math.min(pages - 1, quad.page));
-  const ids = quad.list.slice(quad.page * 4, quad.page * 4 + 4);
-  ui.quad.querySelector('.quad-title').textContent = quad.title;
-  ui.quad.querySelector('.quad-page').textContent = `${quad.page * 4 + 1}〜${quad.page * 4 + ids.length} / ${quad.list.length} 本`;
-  ui.quad.querySelector('.prev').disabled = quad.page === 0;
-  ui.quad.querySelector('.next').disabled = quad.page >= pages - 1;
-  for (const v of ui.quad.querySelectorAll('video')) { v.pause(); v.removeAttribute('src'); v.load(); }
-  ui.quad.querySelector('.quad-grid').replaceChildren(...ids.map((it, i) => quadCell(it, quad.page * 4 + i + 1)));
+function stopVideo(v) { v.pause(); v.removeAttribute('src'); v.load(); }
+
+/** Fill the four cells with list[start..start+3]; later ones follow as videos end. */
+function showFrom(start) {
+  start = Math.max(0, Math.min(start, Math.max(0, quad.list.length - 1)));
+  quad.next = start;
+  for (const cell of quadCells()) loadInto(cell, quad.next < quad.list.length ? quad.next++ : -1);
+  updateQuadHead();
 }
 
-function quadCell(it, n) {
+/** Move one cell on to the next unplayed video (or loop it when the list is used up). */
+function advanceCell(cell) {
+  if (quad.next < quad.list.length) loadInto(cell, quad.next++);
+  else { const v = cell.querySelector('video'); v.currentTime = 0; v.play().catch(() => {}); }
+  updateQuadHead();
+}
+
+function updateQuadHead() {
+  const shown = quadCells().map(c => Number(c.dataset.idx)).filter(i => i >= 0);
+  const left = Math.max(0, quad.list.length - quad.next);
+  ui.quad.querySelector('.quad-title').textContent = quad.title;
+  ui.quad.querySelector('.quad-page').textContent = shown.length
+    ? `${Math.min(...shown) + 1}〜${Math.max(...shown) + 1} 本目を再生中 / ${quad.list.length} 本（残り ${left} 本）` : '';
+  ui.quad.querySelector('.prev').disabled = !shown.length || Math.min(...shown) === 0;
+  ui.quad.querySelector('.next').disabled = left === 0;
+}
+
+function setQuadActive(i) {
+  quad.active = i;
+  quadCells().forEach((c, k) => c.classList.toggle('active', k === i));
+}
+
+function quadCell(slot) {
   const cell = document.createElement('div');
-  cell.className = 'quad-cell';
-  cell.innerHTML = `<video muted loop playsinline preload="auto"></video>
-    <div class="quad-label"><span class="key"></span><span class="badge"></span><span class="t"></span><a target="_blank" rel="noopener">Open ↗</a></div>
-    <div class="quad-seek"><input type="range" min="0" max="1000" value="0" aria-label="シークバー"><span class="time">0:00 / 0:00</span></div>`;
-  cell.querySelector('.key').textContent = n;
-  cell.querySelector('.badge').textContent = quad.badge?.(it) ?? '';
-  cell.querySelector('.t').textContent = it.video.title;
-  const link = cell.querySelector('a'); link.href = it.video.pageUrl; link.addEventListener('click', e => e.stopPropagation());
+  cell.className = `quad-cell${slot === quad.active ? ' active' : ''}`;
+  cell.dataset.idx = '-1';
+  cell.innerHTML = `<video muted playsinline preload="auto"></video>
+    <div class="quad-label"><span class="key"></span><span class="badge"></span><span class="t"></span><span class="snd"></span><a target="_blank" rel="noopener">Open ↗</a></div>
+    <div class="quad-seek"><input type="range" min="0" max="1000" value="0" aria-label="シークバー"><span class="time">0:00 / 0:00</span><span class="speed">1.00x</span></div>`;
   const video = cell.querySelector('video');
-  if (it.video.thumbnail) video.poster = it.video.thumbnail;
-  // click: hear only this one (click again to mute)
+  cell.querySelector('a').addEventListener('click', e => e.stopPropagation());
+  cell.addEventListener('pointerdown', () => setQuadActive(quadCells().indexOf(cell)));
+  // click: hear only this one (click again to mute it)
   cell.addEventListener('click', () => {
     const solo = video.muted;
-    for (const v of ui.quad.querySelectorAll('video')) v.muted = true;
+    for (const v of quadVideos()) v.muted = true;
     video.muted = !solo;
-    for (const c of ui.quad.querySelectorAll('.quad-cell')) c.classList.toggle('audible', !c.querySelector('video').muted);
   });
+  video.addEventListener('volumechange', () => { for (const c of quadCells()) c.querySelector('.snd').textContent = c.querySelector('video').muted ? '' : '🔊'; });
+  video.addEventListener('ratechange', () => { cell.querySelector('.speed').textContent = `${video.playbackRate.toFixed(2)}x`; });
+  video.addEventListener('ended', () => advanceCell(cell));
   const seek = cell.querySelector('.quad-seek'), range = seek.querySelector('input'), time = seek.querySelector('.time');
   for (const ev of ['click', 'pointerdown']) seek.addEventListener(ev, e => e.stopPropagation());
   range.addEventListener('input', () => { if (video.duration) video.currentTime = video.duration * range.value / 1000; });
+  range.addEventListener('pointerup', () => range.blur());
   video.addEventListener('timeupdate', () => {
     if (video.duration) range.value = String(Math.round(video.currentTime / video.duration * 1000));
     time.textContent = `${fmtClock(video.currentTime)} / ${fmtClock(video.duration)}`;
   });
-  (async () => {
-    try {
-      const direct = await resolveVideoUrl(it.video);
-      // web: direct twimg first, then the Worker proxy; extension: direct only
-      const sources = scraper.mediaProxyUrl ? [direct, scraper.mediaProxyUrl(direct)] : [direct];
-      let attempt = 0;
-      video.addEventListener('error', () => {
-        if (!cell.isConnected) return;
-        if (++attempt < sources.length) { video.src = sources[attempt]; video.play().catch(() => {}); }
-        else cell.classList.add('failed');
-      });
-      if (!cell.isConnected) return;
-      video.src = sources[0];
-      video.play().catch(() => {});
-    } catch { cell.classList.add('failed'); }
-  })();
   return cell;
 }
 
+/** Put list[idx] into a cell (idx < 0 = empty). The cell keeps its mute / volume / speed. */
+function loadInto(cell, idx) {
+  const video = cell.querySelector('video');
+  const token = String(Math.random());
+  cell.dataset.idx = String(idx); cell.dataset.token = token;
+  cell.classList.remove('failed');
+  stopVideo(video);
+  const it = quad.list[idx];
+  cell.classList.toggle('empty', !it);
+  cell.querySelector('.key').textContent = it ? idx + 1 : '';
+  cell.querySelector('.badge').textContent = it ? quad.badge?.(it) ?? '' : '';
+  cell.querySelector('.t').textContent = it ? it.video.title : '（一覧の最後まで再生しました）';
+  cell.querySelector('a').href = it ? it.video.pageUrl : '#';
+  cell.querySelector('.time').textContent = '0:00 / 0:00';
+  if (!it) { video.removeAttribute('poster'); return; }
+  if (it.video.thumbnail) video.poster = it.video.thumbnail;
+  const fail = () => {
+    if (cell.dataset.token !== token) return;
+    cell.classList.add('failed');
+    setTimeout(() => { if (cell.dataset.token === token && cell.isConnected) advanceCell(cell); }, 1500);   // skip unplayable ones
+  };
+  (async () => {
+    try {
+      const direct = await resolveVideoUrl(it.video);
+      if (cell.dataset.token !== token) return;
+      // web: direct twimg first, then the Worker proxy; extension: direct only
+      const sources = scraper.mediaProxyUrl ? [direct, scraper.mediaProxyUrl(direct)] : [direct];
+      let attempt = 0;
+      video.onerror = () => {
+        if (cell.dataset.token !== token) return;
+        if (++attempt < sources.length) { video.src = sources[attempt]; video.play().catch(() => {}); } else fail();
+      };
+      video.src = sources[0];
+      video.play().catch(() => {});
+    } catch { fail(); }
+  })();
+}
+
+function quadOperate(video, { action, value = 0 }) {
+  if (action === 'rewind' || action === 'advance') {
+    const d = Number.isFinite(video.duration) ? video.duration : Infinity;
+    video.currentTime = Math.max(0, Math.min(d, video.currentTime + (action === 'rewind' ? -value : value)));
+  } else if (action === 'reset') video.playbackRate = value;
+  else if (action === 'speedToggle') video.playbackRate = Math.abs(video.playbackRate - value) < 0.01 ? 1 : value;
+  else if (action === 'toggle') { if (video.paused || video.ended) video.play().catch(() => {}); else video.pause(); }
+  else if (action === 'mute') video.muted = !video.muted;
+  else if (action === 'volumeUp') { video.volume = Math.min(1, video.volume + value); video.muted = false; }
+  else if (action === 'volumeDown') { video.volume = Math.max(0, video.volume - value); if (!video.volume) video.muted = true; }
+}
+
+/** Shift + a playback key: all four at once (toggles act as one group so the cells stay in sync). */
+function quadOperateAll({ action, value = 0 }) {
+  const vs = quadVideos().filter(v => v.getAttribute('src'));
+  if (action === 'toggle') { const pause = vs.some(v => !v.paused && !v.ended); vs.forEach(v => (pause ? v.pause() : v.play().catch(() => {}))); }
+  else if (action === 'mute') { const mute = vs.some(v => !v.muted); vs.forEach(v => { v.muted = mute; }); }
+  else if (action === 'speedToggle') { const at = vs.every(v => Math.abs(v.playbackRate - value) < 0.01); vs.forEach(v => { v.playbackRate = at ? 1 : value; }); }
+  else vs.forEach(v => quadOperate(v, { action, value }));
+}
+
+function quadMoveFocus(key, reverse = false) {
+  const i = quad.active, row = Math.floor(i / 2), col = i % 2;
+  let n = i;
+  if (key === 'tab') n = (i + (reverse ? 3 : 1)) % 4;
+  else if (key === 'w' && row > 0) n -= 2;
+  else if (key === 's' && row < 1) n += 2;
+  else if (key === 'a' && col > 0) n -= 1;
+  else if (key === 'd' && col < 1) n += 1;
+  setQuadActive(n);
+}
+
 function quadKey(e) {
-  const videos = [...ui.quad.querySelectorAll('video')];
-  const k = e.key.toLowerCase();
-  if (k === 'escape') closeQuad();
-  else if (k === 'arrowright' || k === 'n') { quad.page++; renderQuad(); }
-  else if (k === 'arrowleft' || k === 'p') { quad.page--; renderQuad(); }
-  else if (k === ' ') { const play = videos.every(v => v.paused); videos.forEach(v => (play ? v.play().catch(() => {}) : v.pause())); }
-  else if (k === 'z' || k === 'x') videos.forEach(v => { v.currentTime = Math.max(0, v.currentTime + (k === 'x' ? 5 : -5)); });
-  else if (k === 'm') { const unmute = videos.every(v => v.muted); videos.forEach(v => { v.muted = !unmute; }); }
+  if (e.altKey || e.ctrlKey || e.metaKey) return;
+  if (document.activeElement instanceof HTMLButtonElement || document.activeElement instanceof HTMLInputElement) document.activeElement.blur();
+  const key = e.key.toLowerCase();
+  const binding = e.code === 'Space' ? QUAD_BINDINGS.Space : QUAD_BINDINGS[key];
+  if (e.key === 'Escape') closeQuad();
+  else if (e.key === 'Tab') quadMoveFocus('tab', e.shiftKey);
+  else if (e.shiftKey && binding) quadOperateAll(binding);
+  else if (['w', 'a', 's', 'd'].includes(key)) quadMoveFocus(key);
+  else if (key === 'n' || key === 'enter') advanceCell(quadCells()[quad.active]);        // skip the focused one
+  else if (e.key === 'ArrowRight') { if (quad.next < quad.list.length) showFrom(quad.next); }
+  else if (e.key === 'ArrowLeft') { const first = Math.min(...quadCells().map(c => Number(c.dataset.idx)).filter(i => i >= 0)); showFrom(first - 4); }
+  else if (binding) { const v = quadVideos()[quad.active]; if (v) quadOperate(v, binding); }
   else return;
   e.preventDefault();
 }
@@ -656,8 +747,8 @@ function quadKey(e) {
 ui.quad.addEventListener('click', e => {
   const b = e.target.closest('button');
   if (b?.classList.contains('close')) closeQuad();
-  else if (b?.classList.contains('prev')) { quad.page--; renderQuad(); }
-  else if (b?.classList.contains('next')) { quad.page++; renderQuad(); }
+  else if (b?.classList.contains('prev')) { const first = Math.min(...quadCells().map(c => Number(c.dataset.idx)).filter(i => i >= 0)); showFrom(first - 4); }
+  else if (b?.classList.contains('next')) { if (quad.next < quad.list.length) showFrom(quad.next); }
 });
 
 addEventListener('keydown', e => {
