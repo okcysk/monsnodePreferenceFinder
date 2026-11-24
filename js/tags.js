@@ -29,10 +29,14 @@ export const DEFAULT_TAGS = [
   { since: 2, name: 'ランジェリー', pos: 'a woman wearing lingerie', neg: 'a nude woman | a woman wearing a t-shirt | a woman in a bikini' },
   { since: 2, name: '金髪', pos: 'a person with blonde hair', neg: 'a person with dark hair' },
   { since: 2, name: '自撮り', pos: 'a selfie video taken with a smartphone | a mirror selfie', neg: 'a professionally filmed video | a video filmed by another person' },
+  // added in tag set version 3
+  { since: 3, name: 'オーラル', pos: 'a woman giving oral sex to a man', neg: 'a man and a woman having intercourse | a nude woman posing alone | a woman taking a selfie | a woman in lingerie' },
+  { since: 3, name: 'グラマー', pos: 'a woman with very large breasts and wide hips', neg: 'a woman with small breasts and a slim body | a woman with medium-sized breasts | a woman with an average figure' },
+  { since: 3, name: 'スレンダー', pos: 'a slim, slender woman | a thin woman with a slender body', neg: 'a curvy woman with large breasts | a woman with an average body' },
 ];
 
 /** Bumped when default tags are added; saved tag lists get the new defaults once (see mergeNewDefaults). */
-export const DEFAULT_TAGS_VERSION = 2;
+export const DEFAULT_TAGS_VERSION = 3;
 
 /** Append default tags newer than `version` that the saved list does not have (matched by name). */
 export function mergeNewDefaults(saved, version) {
