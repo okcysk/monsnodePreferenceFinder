@@ -3,7 +3,7 @@ import { collectPool, collectRanking, resolveVideoUrl, mediaProxyUrl } from './s
 import { mergePop } from './popularity.js';
 import { Embedder } from './embed.js';
 import { computeRound, topSeen } from './engine.js';
-import { rankingToPairs } from './gppl.js';
+import { rankingToPairs, KERNELS } from './gppl.js';
 import { nextBeta } from './acquisition.js';
 import { grabFrames, meanEmbedding } from './frames.js';
 
@@ -19,7 +19,7 @@ const ui = {
   grid: $('grid'), actions: $('actions'), undo: $('undo'), skip: $('skip'), submit: $('submit'),
   empty: $('empty'), results: $('results'), resultsTitle: $('results-title'),
   resultsList: $('results-list'), closeResults: $('close-results'),
-  help: $('help'), helpButton: $('help-button'), embedMode: $('embed-mode'), clipDevice: $('clip-device'), popWeight: $('pop-weight'),
+  help: $('help'), helpButton: $('help-button'), embedMode: $('embed-mode'), clipDevice: $('clip-device'), popWeight: $('pop-weight'), kernel: $('kernel'),
   notice: $('notice'),
 };
 
@@ -33,7 +33,8 @@ let embedMode = 'thumb';
 let clipDevice = 'wasm';         // 'wasm' (q8, ~90MB) or 'webgpu' (fp32, ~350MB, faster)
 const POP_WEIGHTS = { off: 0, low: 0.3, mid: 0.6, high: 1 };   // popularity prior strength (GP prior mean scale)
 let popLevel = 'mid';
-const saveSettings = () => db.kvSet('settings', { embedMode, clipDevice, popLevel });
+let kernel = 'rbf';              // GP kernel: 'rbf' (several peaks) / 'linear' (one direction) / 'quad' (one elliptical peak)
+const saveSettings = () => db.kvSet('settings', { embedMode, clipDevice, popLevel, kernel });
 /** Embeddings are stored per CLIP backend (q8 WASM vs fp32 WebGPU give different vectors). */
 const storeOf = kind => (clipDevice === 'webgpu' ? `${kind}Gpu` : kind);
 /** id → Float32Array for the active mode. Only embedded, playable videos: this IS the candidate pool. */
@@ -78,7 +79,7 @@ const save = () => db.kvSet('session', session);
 const roundArgs = (shown = new Set(session.shown)) => ({
   embeddings: pool, pairs: session.pairs.filter(([w, l]) => pool.has(w) && pool.has(l)),
   shown, beta: session.beta, excluded: new Set(session.excluded),
-  popularity: popularityMap(), popWeight: POP_WEIGHTS[popLevel] ?? 0,
+  popularity: popularityMap(), popWeight: POP_WEIGHTS[popLevel] ?? 0, kernel,
 });
 /** id → ranking score for videos that appeared in a monsnode ranking (popularity.js). */
 function popularityMap() {
@@ -98,6 +99,8 @@ async function boot() {
   clipDevice = settings?.clipDevice === 'webgpu' ? 'webgpu' : 'wasm';
   popLevel = settings?.popLevel in POP_WEIGHTS ? settings.popLevel : 'mid';
   ui.popWeight.value = popLevel;
+  kernel = KERNELS.includes(settings?.kernel) ? settings.kernel : 'rbf';
+  ui.kernel.value = kernel;
   ui.embedMode.value = embedMode;
   ui.clipDevice.value = clipDevice;
   try {
@@ -160,6 +163,17 @@ ui.popWeight.addEventListener('change', async () => {
     updateHeader();
   }
   setStatus(`人気の事前情報: ${ui.popWeight.selectedOptions[0].textContent}（次のラウンドから反映）`);
+});
+
+ui.kernel.addEventListener('change', async () => {
+  kernel = ui.kernel.value;
+  await saveSettings();
+  if (pool.size >= MIN_POOL && !ui.grid.hidden && session.pairs.length) {
+    lastRound = computeRound(roundArgs());   // same four stay on screen; the best / results use the new kernel
+    updateHeader();
+  }
+  const lm = lastRound?.model?.logMarginal;
+  setStatus(`${ui.kernel.selectedOptions[0].textContent}（次のラウンドから反映）${Number.isFinite(lm) ? `・周辺尤度 ${lm.toFixed(2)}（大きいほど今までの回答をよく説明）` : ''}`);
 });
 
 ui.embedMode.addEventListener('change', async () => {
@@ -274,7 +288,7 @@ function nextRound() {
   if (pool.size < 4) return;
   const t0 = performance.now();
   lastRound = computeRound(roundArgs());
-  console.debug(`[gppl] round computed in ${(performance.now() - t0).toFixed(0)} ms, pairs=${session.pairs.length}, ell=${lastRound.model?.ell?.toFixed(3)}`);
+  console.debug(`[gppl] round computed in ${(performance.now() - t0).toFixed(0)} ms, kernel=${kernel}, pairs=${session.pairs.length}, ell=${lastRound.model?.ell?.toFixed(3)}, logMarginal=${lastRound.model?.logMarginal?.toFixed(2)}`);
   session.current = lastRound.selection;
   save();
   showRound(session.current);

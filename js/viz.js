@@ -57,7 +57,8 @@ async function load() {
   const pairs = (session.pairs || []).filter(([w, l]) => pool.has(w) && pool.has(l));
   const popularity = new Map(embs.filter(e => videos.get(e.id).pop).map(e => [e.id, videos.get(e.id).pop.s]));
   const popWeight = { off: 0, low: 0.3, mid: 0.6, high: 1 }[settings?.popLevel ?? 'mid'] ?? 0.6;
-  if (pairs.length) ({ mu, sigma } = computeRound({ embeddings: pool, pairs, shown, beta: 0, popularity, popWeight }));
+  const kernel = ['rbf', 'linear', 'quad'].includes(settings?.kernel) ? settings.kernel : 'rbf';
+  if (pairs.length) ({ mu, sigma } = computeRound({ embeddings: pool, pairs, shown, beta: 0, popularity, popWeight, kernel }));
 
   const pca48 = pcaProject(embs.map(e => e.vec), 48);
   const pop = popularityScores(embs.map(e => e.id), new Map(embs.map((e, i) => [e.id, pca48[i]])), popularity);

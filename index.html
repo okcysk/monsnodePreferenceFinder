@@ -12,7 +12,7 @@
 </head>
 <body>
 <header class="bar">
-  <div class="brand"><span class="mark">★</span><div>Preference Finder<small id="app-version" title="Pairwise GPPL">v0.7.2</small></div></div>
+  <div class="brand"><span class="mark">★</span><div>Preference Finder<small id="app-version" title="Pairwise GPPL">v0.8.0</small></div></div>
   <div class="setup">
     <input id="query" type="search" placeholder="検索語（空なら新着）">
     <select id="target" title="候補プールの本数">
@@ -33,6 +33,11 @@
       <option value="low">人気: 弱</option>
       <option value="mid" selected>人気: 中</option>
       <option value="high">人気: 強</option>
+    </select>
+    <select id="kernel" title="GP のカーネル（好みの形の仮定）。RBF = 好みの山がいくつあってもよい／線形 = 好みの方向が1つ／2次 = 楕円の山が1つ。比較履歴は共通">
+      <option value="rbf" selected>カーネル: RBF</option>
+      <option value="linear">カーネル: 線形</option>
+      <option value="quad">カーネル: 2次</option>
     </select>
     <button id="start" class="primary">プール取得</button>
   </div>

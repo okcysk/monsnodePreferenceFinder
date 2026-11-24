@@ -36,7 +36,7 @@ export function fitLogistic(X, y, { lambda = 1e-2, iters = 300, lr = 0.5 } = {})
   // standardise columns so one learning rate fits all
   const mean = new Float64Array(d), sd = new Float64Array(d);
   for (const x of X) for (let k = 0; k < d; k++) mean[k] += x[k] / n;
-  for (const x of X) for (let k = 0; k < d; k++) sd[k] += (x[k] - mean[k]) ** 2 / n;
+  for (const x of X) for (let k = 0; k < d; k++) { const t = x[k] - mean[k]; sd[k] += t * t / n; }
   for (let k = 0; k < d; k++) sd[k] = Math.sqrt(sd[k]) || 1;
   const Xs = X.map(x => Float64Array.from({ length: d }, (_, k) => (x[k] - mean[k]) / sd[k]));
   const pos = y.reduce((s, v) => s + v, 0), neg = n - pos;

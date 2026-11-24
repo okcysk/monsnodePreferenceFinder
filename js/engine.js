@@ -1,5 +1,5 @@
 // Ties PCA + GPPL + acquisition together. Shared by the extension page and tests.html.
-import { fitWithModelSelection, medianDistance } from './gppl.js';
+import { fitWithModelSelection, baseScale } from './gppl.js';
 import { pcaProject } from './pca.js';
 import { initialSelection, selectNext } from './acquisition.js';
 import { popularityScores } from './popularity.js';
@@ -50,8 +50,9 @@ export function priorMean(poolIds, Z, popularity, popWeight) {
  * @param {() => number} [p.rng]
  * @param {Map<string, number>} [p.popularity]  id → ranking score (popularity.js rankScore) for ranked videos
  * @param {number} [p.popWeight=0]  strength of the popularity prior mean (0 = off)
+ * @param {'rbf'|'linear'|'quad'} [p.kernel='rbf']  GP kernel (gppl.js KERNELS)
  */
-export function computeRound({ embeddings, pairs, shown, beta, excluded = new Set(), pcaDim = 48, rng = Math.random, popularity = null, popWeight = 0 }) {
+export function computeRound({ embeddings, pairs, shown, beta, excluded = new Set(), pcaDim = 48, rng = Math.random, popularity = null, popWeight = 0, kernel = 'rbf' }) {
   const poolIds = [...embeddings.keys()];
   const { projected, Z } = projectPool(embeddings, poolIds, pcaDim);
   const pm = priorMean(poolIds, Z, popularity, popWeight);
@@ -71,9 +72,9 @@ export function computeRound({ embeddings, pairs, shown, beta, excluded = new Se
   const trainIds = [...new Set(validPairs.flat())];
   const index = new Map(trainIds.map((id, i) => [id, i]));
   const X = trainIds.map(id => Z.get(id));
-  const baseEll = medianDistance(projected);
+  const baseEll = baseScale(kernel, projected);
   const mean = prior ? trainIds.map(id => prior.get(id)) : null;
-  const model = fitWithModelSelection(X, validPairs.map(([w, l]) => [index.get(w), index.get(l)]), baseEll, { mean });
+  const model = fitWithModelSelection(X, validPairs.map(([w, l]) => [index.get(w), index.get(l)]), baseEll, { mean, kernel });
 
   const { mu: m, variance } = model.predict(poolIds.map(id => Z.get(id)), prior ? poolIds.map(id => prior.get(id)) : null);
   const mu = new Map(poolIds.map((id, i) => [id, m[i]]));
