@@ -37,19 +37,30 @@ export const DEFAULT_TAGS = [
   { since: 4, name: 'おもちゃ', pos: 'a woman using a vibrator', neg: 'a woman masturbating with her fingers | a nude woman posing | a man and a woman having sex | a woman in lingerie' },
   { since: 4, name: '拘束', pos: "ropes tied around a woman's body", neg: 'a nude woman without ropes | a woman wearing lingerie | a woman wearing clothes' },
   { since: 4, name: 'アップ', pos: 'an extreme close-up of skin and genitals', neg: 'a full-body shot of a person | a medium shot showing a face and upper body | a wide shot of a room' },
-  { since: 4, name: 'おしっこ', pos: 'a woman urinating | a person peeing', neg: 'a woman taking a shower | a nude woman posing | a wet woman in a bath' },
   // added in tag set version 5
   { since: 5, name: '芸術的', pos: 'an artistic fine-art nude photograph with dramatic lighting', neg: 'an amateur smartphone video | a professional porn video | a casual selfie' },
+  // added in tag set version 6
+  { since: 6, name: '楽しそう', pos: 'a woman smiling and laughing happily', neg: 'a woman with a neutral, expressionless face | a woman with her eyes closed | a woman whose face is not visible' },
 ];
 
-/** Bumped when default tags are added; saved tag lists get the new defaults once (see mergeNewDefaults). */
-export const DEFAULT_TAGS_VERSION = 5;
+/** Bumped when default tags change; saved tag lists are updated once (see mergeNewDefaults). */
+export const DEFAULT_TAGS_VERSION = 6;
 
-/** Append default tags newer than `version` that the saved list does not have (matched by name). */
+/** Default tags that were dropped: removed from saved lists only if the user left them exactly as shipped. */
+export const REMOVED_DEFAULTS = [
+  { removedIn: 6, name: 'おしっこ', pos: 'a woman urinating | a person peeing', neg: 'a woman taking a shower | a nude woman posing | a wet woman in a bath' },
+];
+
+/**
+ * Bring a saved tag list up to date: append default tags newer than `version` that it does not have
+ * (matched by name) and drop removed defaults the user never edited.
+ */
 export function mergeNewDefaults(saved, version) {
-  const names = new Set(saved.map(t => t.name));
+  const dropped = REMOVED_DEFAULTS.filter(r => r.removedIn > version);
+  const kept = saved.filter(t => !dropped.some(r => r.name === t.name && r.pos === t.pos && r.neg === t.neg));
+  const names = new Set(kept.map(t => t.name));
   const added = DEFAULT_TAGS.filter(t => (t.since ?? 1) > version && !names.has(t.name)).map(({ name, pos, neg }) => ({ name, pos, neg }));
-  return { tags: [...saved, ...added], added: added.length };
+  return { tags: [...kept, ...added], added: added.length, removed: saved.length - kept.length };
 }
 
 export const splitPrompts = s => String(s || '').split('|').map(t => t.trim()).filter(Boolean);
