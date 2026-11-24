@@ -570,7 +570,11 @@ canvas.addEventListener('wheel', e => {
 // ---------- 4-screen player (selected video + neighbours, or a tag's top videos) ----------
 // Plays the list from the top: when a video ends (or fails to load) its cell moves on to the next unplayed one.
 // Keys follow the other 4movPlayer players: W/A/S/D・Tab focus, playback keys act on the focused cell, Shift = all four.
-const quad = { list: [], next: 0, badge: null, title: '', active: 0 };
+const quad = { list: [], next: 0, badge: null, title: '', active: 0, cols: 2 };
+// Auto layout: choose the number of columns that shows the most video area for the current videos' shapes
+// (portrait videos side by side, landscape ones stacked). Off = fixed 2×2. Remembered per browser.
+let quadAuto = true;
+try { quadAuto = localStorage.getItem('gppl-quad-auto') !== 'off'; } catch { /* storage unavailable */ }
 const fmtClock = t => Number.isFinite(t) ? `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}` : '0:00';
 const QUAD_BINDINGS = {
   z: { action: 'rewind', value: 5 }, x: { action: 'advance', value: 5 },
@@ -586,7 +590,9 @@ function openQuad(list, title, badge) {
   quad.list = list; quad.badge = badge; quad.title = title; quad.active = 0;
   ui.quad.hidden = false;
   ui.quad.querySelector('.quad-grid').replaceChildren(...[0, 1, 2, 3].map(i => quadCell(i)));
+  syncAutoButton();
   showFrom(0);
+  applyQuadLayout();
 }
 
 function closeQuad() {
@@ -618,8 +624,6 @@ function updateQuadHead() {
   ui.quad.querySelector('.quad-title').textContent = quad.title;
   ui.quad.querySelector('.quad-page').textContent = shown.length
     ? `${Math.min(...shown) + 1}〜${Math.max(...shown) + 1} 本目を再生中 / ${quad.list.length} 本（残り ${left} 本）` : '';
-  ui.quad.querySelector('.prev').disabled = !shown.length || Math.min(...shown) === 0;
-  ui.quad.querySelector('.next').disabled = left === 0;
 }
 
 function setQuadActive(i) {
@@ -646,6 +650,7 @@ function quadCell(slot) {
   video.addEventListener('volumechange', () => { for (const c of quadCells()) c.querySelector('.snd').textContent = c.querySelector('video').muted ? '' : '🔊'; });
   video.addEventListener('ratechange', () => { cell.querySelector('.speed').textContent = `${video.playbackRate.toFixed(2)}x`; });
   video.addEventListener('ended', () => advanceCell(cell));
+  video.addEventListener('loadedmetadata', applyQuadLayout);
   const seek = cell.querySelector('.quad-seek'), range = seek.querySelector('input'), time = seek.querySelector('.time');
   for (const ev of ['click', 'pointerdown']) seek.addEventListener(ev, e => e.stopPropagation());
   range.addEventListener('input', () => { if (video.duration) video.currentTime = video.duration * range.value / 1000; });
@@ -717,15 +722,48 @@ function quadOperateAll({ action, value = 0 }) {
 }
 
 function quadMoveFocus(key, reverse = false) {
-  const i = quad.active, row = Math.floor(i / 2), col = i % 2;
+  const count = quadCells().length, cols = quad.cols, i = quad.active, col = i % cols;
   let n = i;
-  if (key === 'tab') n = (i + (reverse ? 3 : 1)) % 4;
-  else if (key === 'w' && row > 0) n -= 2;
-  else if (key === 's' && row < 1) n += 2;
+  if (key === 'tab') n = (i + (reverse ? count - 1 : 1)) % count;
+  else if (key === 'w' && i - cols >= 0) n -= cols;
+  else if (key === 's' && i + cols < count) n += cols;
   else if (key === 'a' && col > 0) n -= 1;
-  else if (key === 'd' && col < 1) n += 1;
+  else if (key === 'd' && col < cols - 1 && i + 1 < count) n += 1;
   setQuadActive(n);
 }
+
+/** Aspect ratio (w/h) of each cell's video; 16:9 until its size is known. */
+const quadAspects = () => quadVideos().map(v => (v.videoWidth && v.videoHeight ? v.videoWidth / v.videoHeight : 16 / 9));
+
+function applyQuadLayout() {
+  if (ui.quad.hidden) return;
+  const grid = ui.quad.querySelector('.quad-grid');
+  const n = quadCells().length || 4;
+  let cols = 2;
+  if (quadAuto) {
+    const { width, height } = grid.getBoundingClientRect();
+    const aspects = quadAspects();
+    let best = -1;
+    for (let c = 1; c <= n; c++) {
+      const rows = Math.ceil(n / c), cw = width / c, ch = height / rows;
+      // area each video gets when fitted (object-fit: contain) into its cell
+      const area = aspects.reduce((sum, a) => { const w = Math.min(cw, ch * a); return sum + w * (w / a); }, 0);
+      if (area > best * 1.02) { best = area; cols = c; }   // prefer the earlier (2-column-ish) choice on near ties
+    }
+  }
+  quad.cols = cols;
+  grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+  grid.style.gridTemplateRows = `repeat(${Math.ceil(n / cols)}, minmax(0, 1fr))`;
+  const b = ui.quad.querySelector('.auto-layout');
+  b.title = `自動レイアウト: 動画の縦横比に合わせて並べ方を選ぶ（いまは ${cols}列 × ${Math.ceil(n / cols)}行）`;
+}
+
+function syncAutoButton() {
+  const b = ui.quad.querySelector('.auto-layout');
+  b.textContent = `自動レイアウト ${quadAuto ? 'ON' : 'OFF'}`;
+  b.setAttribute('aria-pressed', String(quadAuto));
+}
+addEventListener('resize', applyQuadLayout);
 
 function quadKey(e) {
   if (e.altKey || e.ctrlKey || e.metaKey) return;
@@ -747,8 +785,12 @@ function quadKey(e) {
 ui.quad.addEventListener('click', e => {
   const b = e.target.closest('button');
   if (b?.classList.contains('close')) closeQuad();
-  else if (b?.classList.contains('prev')) { const first = Math.min(...quadCells().map(c => Number(c.dataset.idx)).filter(i => i >= 0)); showFrom(first - 4); }
-  else if (b?.classList.contains('next')) { if (quad.next < quad.list.length) showFrom(quad.next); }
+  else if (b?.classList.contains('auto-layout')) {
+    quadAuto = !quadAuto;
+    try { localStorage.setItem('gppl-quad-auto', quadAuto ? 'on' : 'off'); } catch { /* storage unavailable */ }
+    syncAutoButton();
+    applyQuadLayout();
+  }
 });
 
 addEventListener('keydown', e => {

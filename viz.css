@@ -68,6 +68,7 @@
 .quad-page{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 .quad-help{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:11px}
 .quad-head button{white-space:nowrap;flex:none}
+.quad-head .auto-layout[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
 .quad-grid{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:2px}
 .quad-cell{position:relative;min-height:0;background:#08090b;cursor:pointer;outline:2px solid transparent;outline-offset:-2px}
 .quad-cell.active{outline-color:var(--accent)}
