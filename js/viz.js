@@ -5,7 +5,8 @@ import { pcaProject } from './pca.js';
 import { TSNE } from './tsne.js';
 import { computeRound } from './engine.js';
 import { popularityScores } from './popularity.js';
-import { resolveVideoUrl } from './scraper.js';
+import * as scraper from './scraper.js';   // web: has mediaProxyUrl (Worker fallback); extension: direct only
+const { resolveVideoUrl } = scraper;
 import { grabFrames } from './frames.js';
 import { Embedder } from './embed.js';
 import { DEFAULT_TAGS, DEFAULT_TAGS_VERSION, mergeNewDefaults, scoreTags, scoreText } from './tags.js';
@@ -13,7 +14,8 @@ import { DEFAULT_TAGS, DEFAULT_TAGS_VERSION, mergeNewDefaults, scoreTags, scoreT
 const $ = id => document.getElementById(id);
 const canvas = $('canvas'), ctx = canvas.getContext('2d');
 const ui = { proj: $('proj'), color: $('color'), size: $('size'), fit: $('fit'), status: $('status'), meter: $('meter-fill'), legend: $('legend'), tip: $('tip'), panel: $('panel'),
-  tagEdit: $('tag-edit'), textQuery: $('text-query'), tagEditor: $('tag-editor'), tagRows: $('tag-rows'), tagLabels: $('tag-labels') };
+  tagEdit: $('tag-edit'), textQuery: $('text-query'), tagEditor: $('tag-editor'), tagRows: $('tag-rows'), tagLabels: $('tag-labels'),
+  quad: $('quad') };
 
 let items = [];        // [{id, video, vec, pca48, x, y, img, mu, sigma, shown}]
 let view = { scale: 1, tx: 0, ty: 0 };
@@ -215,12 +217,14 @@ function showTagList(key) {
     <div class="panel-head"><button type="button" class="ghost deselect" title="タグの選択を解除 (Esc・もう一度タグをクリック)">選択解除 ×</button></div>
     <h3 class="list-title"></h3>
     <p class="list-note"></p>
+    <button type="button" class="play-quad">▶ 上位を4画面で再生</button>
     <div class="nn"></div>`;
   ui.panel.querySelector('.list-title').textContent = `${name} の上位 ${top.length} 本`;
   ui.panel.querySelector('.list-note').textContent = isSearch
     ? `文章との類似度が高い順（上位10% = ${hits} 本）。数字は全候補の中での位置（%）。クリックでその動画の詳細`
     : `「${name}」らしさが高い順（50%以上 = ${hits} / ${items.length} 本）。クリックでその動画の詳細`;
   ui.panel.querySelector('.deselect').addEventListener('click', clearSelection);
+  ui.panel.querySelector('.play-quad').addEventListener('click', () => openQuad(top, `${name} の上位`, o => `${Math.round(score[o.idx] * 100)}%`));
   ui.panel.querySelector('.nn').replaceChildren(...top.map(it => {
     const b = document.createElement('button');
     b.innerHTML = '<img alt=""><span><b></b><em></em></span>';
@@ -479,6 +483,7 @@ function renderPanel() {
   ui.panel.innerHTML = `
     <div class="panel-head">${tagList ? '<button type="button" class="ghost back-list"></button>' : ''}<button type="button" class="ghost deselect" title="選択解除 (Esc)">選択解除 ×</button></div>
     <div class="sel"><img alt=""><div class="t"></div><div class="s"></div><div class="tag-chips"></div><a target="_blank" rel="noopener">Open ↗</a></div>
+    <button type="button" class="play-quad">▶ この動画と近傍を4画面で再生</button>
     <h3 style="margin-top:14px">動画フレーム（4区間の中央）</h3>
     <div class="frames"></div>
     <h3 style="margin-top:14px">512次元空間の近傍 Top 12（コサイン類似度）</h3>
@@ -490,6 +495,7 @@ function renderPanel() {
   ui.panel.querySelector('.sel .s').textContent = `${fmt(it.mu, it.sigma)} · ${it.shown ? '表示済み' : '未表示'}${popText}`;
   ui.panel.querySelector('.sel a').href = it.video.pageUrl;
   ui.panel.querySelector('.deselect').addEventListener('click', clearSelection);
+  ui.panel.querySelector('.play-quad').addEventListener('click', () => openQuad([it, ...nn.map(n => n.it)], `${it.video.title.slice(0, 30)} と近傍`, o => o === it ? '選択中' : `類似 ${nn.find(n => n.it === o).sim.toFixed(3)}`));
   const back = ui.panel.querySelector('.back-list');
   if (back) { back.textContent = `← ${tagList.name} の一覧`; back.addEventListener('click', () => showTagList(tagList.key)); }
   fillChips(it);
@@ -561,7 +567,101 @@ canvas.addEventListener('wheel', e => {
   draw();
 }, { passive: false });
 
+// ---------- 4-screen player (selected video + neighbours, or a tag's top videos) ----------
+const quad = { list: [], page: 0, badge: null, title: '' };
+const fmtClock = t => Number.isFinite(t) ? `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}` : '0:00';
+
+function openQuad(list, title, badge) {
+  quad.list = list; quad.page = 0; quad.badge = badge; quad.title = title;
+  ui.quad.hidden = false;
+  renderQuad();
+}
+
+function closeQuad() {
+  for (const v of ui.quad.querySelectorAll('video')) { v.pause(); v.removeAttribute('src'); v.load(); }
+  ui.quad.querySelector('.quad-grid').replaceChildren();
+  ui.quad.hidden = true;
+}
+
+function renderQuad() {
+  const pages = Math.max(1, Math.ceil(quad.list.length / 4));
+  quad.page = Math.max(0, Math.min(pages - 1, quad.page));
+  const ids = quad.list.slice(quad.page * 4, quad.page * 4 + 4);
+  ui.quad.querySelector('.quad-title').textContent = quad.title;
+  ui.quad.querySelector('.quad-page').textContent = `${quad.page * 4 + 1}〜${quad.page * 4 + ids.length} / ${quad.list.length} 本`;
+  ui.quad.querySelector('.prev').disabled = quad.page === 0;
+  ui.quad.querySelector('.next').disabled = quad.page >= pages - 1;
+  for (const v of ui.quad.querySelectorAll('video')) { v.pause(); v.removeAttribute('src'); v.load(); }
+  ui.quad.querySelector('.quad-grid').replaceChildren(...ids.map((it, i) => quadCell(it, quad.page * 4 + i + 1)));
+}
+
+function quadCell(it, n) {
+  const cell = document.createElement('div');
+  cell.className = 'quad-cell';
+  cell.innerHTML = `<video muted loop playsinline preload="auto"></video>
+    <div class="quad-label"><span class="key"></span><span class="badge"></span><span class="t"></span><a target="_blank" rel="noopener">Open ↗</a></div>
+    <div class="quad-seek"><input type="range" min="0" max="1000" value="0" aria-label="シークバー"><span class="time">0:00 / 0:00</span></div>`;
+  cell.querySelector('.key').textContent = n;
+  cell.querySelector('.badge').textContent = quad.badge?.(it) ?? '';
+  cell.querySelector('.t').textContent = it.video.title;
+  const link = cell.querySelector('a'); link.href = it.video.pageUrl; link.addEventListener('click', e => e.stopPropagation());
+  const video = cell.querySelector('video');
+  if (it.video.thumbnail) video.poster = it.video.thumbnail;
+  // click: hear only this one (click again to mute)
+  cell.addEventListener('click', () => {
+    const solo = video.muted;
+    for (const v of ui.quad.querySelectorAll('video')) v.muted = true;
+    video.muted = !solo;
+    for (const c of ui.quad.querySelectorAll('.quad-cell')) c.classList.toggle('audible', !c.querySelector('video').muted);
+  });
+  const seek = cell.querySelector('.quad-seek'), range = seek.querySelector('input'), time = seek.querySelector('.time');
+  for (const ev of ['click', 'pointerdown']) seek.addEventListener(ev, e => e.stopPropagation());
+  range.addEventListener('input', () => { if (video.duration) video.currentTime = video.duration * range.value / 1000; });
+  video.addEventListener('timeupdate', () => {
+    if (video.duration) range.value = String(Math.round(video.currentTime / video.duration * 1000));
+    time.textContent = `${fmtClock(video.currentTime)} / ${fmtClock(video.duration)}`;
+  });
+  (async () => {
+    try {
+      const direct = await resolveVideoUrl(it.video);
+      // web: direct twimg first, then the Worker proxy; extension: direct only
+      const sources = scraper.mediaProxyUrl ? [direct, scraper.mediaProxyUrl(direct)] : [direct];
+      let attempt = 0;
+      video.addEventListener('error', () => {
+        if (!cell.isConnected) return;
+        if (++attempt < sources.length) { video.src = sources[attempt]; video.play().catch(() => {}); }
+        else cell.classList.add('failed');
+      });
+      if (!cell.isConnected) return;
+      video.src = sources[0];
+      video.play().catch(() => {});
+    } catch { cell.classList.add('failed'); }
+  })();
+  return cell;
+}
+
+function quadKey(e) {
+  const videos = [...ui.quad.querySelectorAll('video')];
+  const k = e.key.toLowerCase();
+  if (k === 'escape') closeQuad();
+  else if (k === 'arrowright' || k === 'n') { quad.page++; renderQuad(); }
+  else if (k === 'arrowleft' || k === 'p') { quad.page--; renderQuad(); }
+  else if (k === ' ') { const play = videos.every(v => v.paused); videos.forEach(v => (play ? v.play().catch(() => {}) : v.pause())); }
+  else if (k === 'z' || k === 'x') videos.forEach(v => { v.currentTime = Math.max(0, v.currentTime + (k === 'x' ? 5 : -5)); });
+  else if (k === 'm') { const unmute = videos.every(v => v.muted); videos.forEach(v => { v.muted = !unmute; }); }
+  else return;
+  e.preventDefault();
+}
+
+ui.quad.addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (b?.classList.contains('close')) closeQuad();
+  else if (b?.classList.contains('prev')) { quad.page--; renderQuad(); }
+  else if (b?.classList.contains('next')) { quad.page++; renderQuad(); }
+});
+
 addEventListener('keydown', e => {
+  if (!ui.quad.hidden) { quadKey(e); return; }
   if (e.key !== 'Escape') return;
   if (!ui.tagEditor.hidden) { ui.tagEditor.hidden = true; return; }
   if (e.target instanceof HTMLInputElement) return;

@@ -60,3 +60,23 @@
 .tag-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
 @media(max-width:1100px){.setup #text-query{width:140px}}
 @media(max-width:700px){.tag-row{grid-template-columns:1fr 32px}.tag-row .tp,.tag-row .tg{grid-column:1/2}.tag-head{display:none}}
+.play-quad{width:100%;margin-top:10px;padding:8px;border-color:var(--accent);color:var(--accent)}
+.quad{position:fixed;z-index:30;inset:0;display:flex;flex-direction:column;background:#000}
+.quad[hidden]{display:none}
+.quad-head{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line);font-size:12px}
+.quad-title{max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.quad-page{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.quad-help{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:11px}
+.quad-head button{white-space:nowrap;flex:none}
+.quad-grid{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:2px}
+.quad-cell{position:relative;min-height:0;background:#08090b;cursor:pointer;outline:2px solid transparent;outline-offset:-2px}
+.quad-cell.audible{outline-color:var(--accent)}
+.quad-cell video{width:100%;height:100%;object-fit:contain;display:block;background:#000}
+.quad-label{position:absolute;left:8px;right:8px;bottom:30px;display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:8px;background:#08090bbd;font-size:12px}
+.quad-label .key{display:grid;place-items:center;min-width:20px;height:20px;border-radius:6px;background:#24262b;color:var(--accent);font-weight:700;font-size:11px}
+.quad-label .badge{color:var(--accent);font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.quad-label .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.quad-label a{color:#ddd;text-decoration:none;font-size:11px;white-space:nowrap}
+.quad-seek{position:absolute;left:8px;right:8px;bottom:6px;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted)}
+.quad-seek input{flex:1;width:auto;min-width:0;padding:0;accent-color:var(--accent)}
+.quad-cell.failed::after{content:'動画を読み込めませんでした';position:absolute;inset:0;display:grid;place-items:center;background:#000a;color:var(--muted);font-size:13px}
