@@ -13,7 +13,7 @@ import { DEFAULT_TAGS, scoreTags, scoreText } from './tags.js';
 const $ = id => document.getElementById(id);
 const canvas = $('canvas'), ctx = canvas.getContext('2d');
 const ui = { proj: $('proj'), color: $('color'), size: $('size'), fit: $('fit'), status: $('status'), meter: $('meter-fill'), legend: $('legend'), tip: $('tip'), panel: $('panel'),
-  tagEdit: $('tag-edit'), textQuery: $('text-query'), tagEditor: $('tag-editor'), tagRows: $('tag-rows') };
+  tagEdit: $('tag-edit'), textQuery: $('text-query'), tagEditor: $('tag-editor'), tagRows: $('tag-rows'), tagLabels: $('tag-labels') };
 
 let items = [];        // [{id, video, vec, pca48, x, y, img, mu, sigma, shown}]
 let view = { scale: 1, tx: 0, ty: 0 };
@@ -27,6 +27,9 @@ let popInfo = null;     // {auc, shrink, known} from popularity.js, null without
 let tags = DEFAULT_TAGS.map(t => ({ ...t }));
 let tagScores = [];        // per tag: Float32Array aligned with items (probability 0–1)
 let search = null;         // { query, score: Float32Array (cosine), pct: Float32Array (rank 0–1) }
+let tagAnchors = [];       // per tag: index of its most representative item (or -1)
+let searchAnchor = -1;
+let simMatrix = null;      // N×N cosine similarities (512-D), built once per load
 let textEmbedder = null;
 const getTextEmbedder = () => textEmbedder ??= new Embedder({
   preload: false,
@@ -69,6 +72,7 @@ async function load() {
   items.forEach((it, i) => { it.idx = i; });
   muMax = Math.max(1e-6, ...items.map(it => Math.abs(it.mu ?? 0)));
   setStatus(`${items.length} 本 · 512次元 → PCA ${pca48[0].length}次元 · 比較 ${pairs.length} 件`, 1);
+  window.__vizItems = () => items;   // debug hook (positions, scores)
   window.__viz = { count: items.length, dim: embs[0].vec.length, pcaDim: pca48[0].length, pairs: pairs.length, pop: popInfo };
   refreshColorOptions();
   layout();
@@ -84,8 +88,10 @@ async function computeTags() {
   try {
     const t0 = performance.now();
     tagScores = await scoreTags(tags, items.map(it => it.vec), embedTexts);
+    tagAnchors = tagScores.map(p => representative(p, 0.5));
     setStatus(`タグを計算しました（${tags.length} 個 · ${Math.round(performance.now() - t0)} ms）`, 1);
-    window.__vizTags = tags.map((t, k) => ({ name: t.name, count: tagScores[k] ? tagScores[k].filter(p => p >= 0.5).length : null }));
+    window.__vizTags = tags.map((t, k) => ({ name: t.name, count: tagScores[k] ? tagScores[k].filter(p => p >= 0.5).length : null,
+      anchor: tagAnchors[k] >= 0 ? { id: items[tagAnchors[k]].id, p: +tagScores[k][tagAnchors[k]].toFixed(3) } : null }));
   } catch (error) {
     setStatus(`タグを計算できませんでした: ${error.message}`);
   }
@@ -96,13 +102,14 @@ async function computeTags() {
 
 async function runSearch(query) {
   query = query.trim();
-  if (!query) { search = null; refreshColorOptions(); draw(); return; }
+  if (!query) { search = null; searchAnchor = -1; refreshColorOptions(); draw(); return; }
   try {
     const score = await scoreText(query, items.map(it => it.vec), embedTexts);
     const order = [...score.keys()].sort((a, b) => score[a] - score[b]);
     const pct = new Float32Array(score.length);
     order.forEach((i, r) => { pct[i] = r / Math.max(1, order.length - 1); });
     search = { query, score, pct };
+    searchAnchor = representative(pct, 0.9);
     refreshColorOptions();
     ui.color.value = 'search';
     setStatus(`「${query}」に近い動画を強調しました（上位10%）`, 1);
@@ -110,6 +117,57 @@ async function runSearch(query) {
     setStatus(`テキスト検索に失敗しました: ${error.message}`);
   }
   draw();
+}
+
+/**
+ * Most representative item for a 0–1 score: among items at or above the threshold, the one at the
+ * centre of the densest group of high scorers in the 512-D space,
+ *   argmax_i  w_i · Σ_j w_j · exp((cos_ij − 1) / τ),   w = max(0, p − threshold) / (1 − threshold)
+ * so the label sits on the main cluster rather than on a lone outlier or in empty space.
+ */
+function representative(p, threshold, tau = 0.05) {
+  const n = items.length;
+  if (!simMatrix || simMatrix.length !== n * n) {
+    simMatrix = new Float32Array(n * n);
+    for (let i = 0; i < n; i++) for (let j = i; j < n; j++) {
+      const c = cosine(items[i].vec, items[j].vec); simMatrix[i * n + j] = c; simMatrix[j * n + i] = c;
+    }
+  }
+  const w = Array.from(p, v => Math.max(0, v - threshold) / (1 - threshold));
+  let best = -1, bestScore = 0;
+  for (let i = 0; i < n; i++) {
+    if (!(p[i] >= threshold)) continue;
+    let s = 0;
+    for (let j = 0; j < n; j++) if (w[j]) s += w[j] * Math.exp((simMatrix[i * n + j] - 1) / tau);
+    s *= Math.max(w[i], 1e-3);
+    if (s > bestScore) { bestScore = s; best = i; }
+  }
+  return best;
+}
+
+/** One label per tag (and the text search), placed on its representative item. */
+function drawTagLabels(mode, size) {
+  if (!ui.tagLabels.checked) return;
+  const labels = tags.map((t, k) => ({ text: t.name, idx: tagAnchors[k] ?? -1, active: mode === `tag:${k}` }));
+  if (search) labels.push({ text: `“${search.query}”`, idx: searchAnchor, active: mode === 'search' });
+  const placed = [];
+  ctx.font = '700 12px system-ui, sans-serif';
+  ctx.textBaseline = 'middle';
+  for (const l of labels.filter(l => l.idx >= 0).sort((a, b) => a.active - b.active)) {
+    const [sx, sy0] = toScreen(items[l.idx]);
+    let sy = sy0 - size * 0.33 - 14;
+    const tw = ctx.measureText(l.text).width + 14;
+    while (placed.some(q => Math.abs(q.x - sx) < (q.w + tw) / 2 && Math.abs(q.y - sy) < 20)) sy -= 22;   // stack instead of overlapping
+    placed.push({ x: sx, y: sy, w: tw });
+    ctx.strokeStyle = l.active ? '#c4f26a' : '#ffffff99'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(sx, sy + 10); ctx.lineTo(sx, sy0 - size * 0.33 - 2); ctx.stroke();
+    ctx.fillStyle = l.active ? '#c4f26a' : '#111319e6';
+    ctx.beginPath(); ctx.roundRect(sx - tw / 2, sy - 10, tw, 20, 10); ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = l.active ? '#111319' : '#f2f3f5';
+    ctx.textAlign = 'center'; ctx.fillText(l.text, sx, sy + 0.5);
+  }
+  ctx.textAlign = 'start';
 }
 
 function refreshColorOptions() {
@@ -256,6 +314,7 @@ function draw() {
     ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
     ctx.strokeRect(sx - size / 2 - 3, sy - size * 0.33 - 3, size + 6, size * 0.66 + 6);
   }
+  drawTagLabels(mode, size);
   drawLegend(mode);
 }
 
@@ -433,6 +492,7 @@ addEventListener('keydown', e => {
 ui.proj.addEventListener('change', layout);
 ui.color.addEventListener('change', draw);
 ui.size.addEventListener('input', draw);
+ui.tagLabels.addEventListener('change', draw);
 ui.fit.addEventListener('click', () => { fitView(); draw(); });
 addEventListener('resize', draw);
 
