@@ -1,17 +1,32 @@
 // Ties PCA + GPPL + acquisition together. Shared by the extension page and tests.html.
 import { fitWithModelSelection, baseScale } from './gppl.js';
-import { pcaProject } from './pca.js';
+import { pcaProject, projectOnto } from './pca.js';
 import { initialSelection, selectNext } from './acquisition.js';
 import { popularityScores } from './popularity.js';
 
-// PCA only changes when the pool changes, so cache it per (embeddings map, pool size, dim).
+// PCA only changes when the pool changes. When the pool merely grows a little (embedding still running,
+// a few more videos fetched), the new videos are projected onto the existing axes instead of recomputing,
+// which is the slow part (≈ N² · iterations). A full recompute happens when the pool changes a lot.
 let pcaCache = null;
+const REUSE_GROWTH = 0.25;   // reuse the axes while new videos are at most 25% of the ones they were fitted on
 function projectPool(embeddings, poolIds, pcaDim) {
-  if (pcaCache && pcaCache.embeddings === embeddings && pcaCache.size === poolIds.length && pcaCache.dim === pcaDim
-    && poolIds.every(id => pcaCache.Z.has(id))) return pcaCache;
+  const c = pcaCache;
+  if (c && c.dim === pcaDim && c.basis) {
+    const same = c.size === poolIds.length && poolIds.every(id => c.Z.has(id) && c.vecs.get(id) === embeddings.get(id));
+    if (same) return c;
+    const known = new Set(poolIds.filter(id => c.Z.has(id) && c.vecs.get(id) === embeddings.get(id)));
+    const added = poolIds.length - known.size;
+    // reuse only if (almost) all fitted videos are still there with the same vectors and few were added
+    if (added <= c.fitted * REUSE_GROWTH && known.size >= c.fitted * 0.9) {
+      const Z = new Map(poolIds.map(id => [id, known.has(id) ? c.Z.get(id) : projectOnto(c.basis, embeddings.get(id))]));
+      pcaCache = { ...c, size: poolIds.length, projected: poolIds.map(id => Z.get(id)), Z, vecs: new Map(poolIds.map(id => [id, embeddings.get(id)])) };
+      return pcaCache;
+    }
+  }
   const projected = pcaProject(poolIds.map(id => embeddings.get(id)), pcaDim);
   const Z = new Map(poolIds.map((id, i) => [id, projected[i]]));
-  pcaCache = { embeddings, size: poolIds.length, dim: pcaDim, projected, Z };
+  pcaCache = { size: poolIds.length, fitted: poolIds.length, dim: pcaDim, projected, Z, basis: projected.basis,
+    vecs: new Map(poolIds.map(id => [id, embeddings.get(id)])) };
   return pcaCache;
 }
 

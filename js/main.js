@@ -506,8 +506,37 @@ function syncRanks() {
   ui.submit.disabled = need >= 2 && order.length !== need;
 }
 
-async function submit() {
-  if (ui.submit.disabled) return;
+/**
+ * While the next round is being computed: show it at once, and ignore further clicks / Enter
+ * (a second submit would record the same ranking twice).
+ */
+let busy = false;
+const nextFrame = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+async function whileBusy(label, work) {
+  if (busy) return;
+  busy = true;
+  const text = ui.submit.textContent;
+  ui.submit.disabled = true; ui.skip.disabled = true; ui.undo.disabled = true;
+  ui.submit.textContent = label;
+  ui.grid.classList.add('busy');
+  setStatus(`${label}（次の4本を選んでいます）`);
+  try {
+    await nextFrame();                 // let the button and the dimmed grid paint before the heavy work
+    await work();
+  } finally {
+    ui.submit.textContent = text;
+    ui.skip.disabled = false; ui.undo.disabled = false;
+    ui.grid.classList.remove('busy');
+    busy = false;
+    syncRanks();
+  }
+}
+
+function submit() {
+  if (ui.submit.disabled || busy) return;
+  return whileBusy('計算中…', submitNow);
+}
+async function submitNow() {
   const wasBest = lastRound?.best ?? (session.pairs.length ? session.current[0] : null);
   if (order.length >= 2) session.pairs.push(...rankingToPairs(order));
   session.shown = [...new Set([...session.shown, ...session.current])];
@@ -517,10 +546,14 @@ async function submit() {
   session.beta = nextBeta(session.beta);
   await save();
   nextRound();
+  setStatus(`ラウンド ${session.round} · 比較 ${session.pairs.length} 件`);
   if (session.streak >= STREAK_TO_FINISH) showResults(true);
 }
-
-async function skip() {
+function skip() {
+  if (busy) return;
+  return whileBusy('入れ替え中…', skipNow);
+}
+async function skipNow() {
   session.shown = [...new Set([...session.shown, ...session.current])];
   session.excluded = [...new Set([...session.excluded, ...skipped])];
   session.round++;
