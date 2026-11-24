@@ -30,6 +30,8 @@ let search = null;         // { query, score: Float32Array (cosine), pct: Float3
 let tagAnchors = [];       // per tag: index of its most representative item (or -1)
 let searchAnchor = -1;
 let simMatrix = null;      // N×N cosine similarities (512-D), built once per load
+let labelHits = [];        // clickable label boxes from the last draw: {key, x0, y0, x1, y1}
+let tagList = null;        // {key, name, ids: Set} while the panel lists a tag's top videos
 let textEmbedder = null;
 const getTextEmbedder = () => textEmbedder ??= new Embedder({
   preload: false,
@@ -157,9 +159,10 @@ function representative(p, threshold, tau = 0.05) {
 /** One label per tag (and the text search), placed on its representative item. */
 function drawTagLabels(mode, size) {
   if (!ui.tagLabels.checked) return;
-  const labels = tags.map((t, k) => ({ text: t.name, idx: tagAnchors[k] ?? -1, active: mode === `tag:${k}` }));
-  if (search) labels.push({ text: `“${search.query}”`, idx: searchAnchor, active: mode === 'search' });
+  const labels = tags.map((t, k) => ({ key: `tag:${k}`, text: t.name, idx: tagAnchors[k] ?? -1, active: mode === `tag:${k}` }));
+  if (search) labels.push({ key: 'search', text: `“${search.query}”`, idx: searchAnchor, active: mode === 'search' });
   const placed = [];
+  labelHits = [];
   ctx.font = '700 12px system-ui, sans-serif';
   ctx.textBaseline = 'middle';
   for (const l of labels.filter(l => l.idx >= 0).sort((a, b) => a.active - b.active)) {
@@ -168,6 +171,7 @@ function drawTagLabels(mode, size) {
     const tw = ctx.measureText(l.text).width + 14;
     while (placed.some(q => Math.abs(q.x - sx) < (q.w + tw) / 2 && Math.abs(q.y - sy) < 20)) sy -= 22;   // stack instead of overlapping
     placed.push({ x: sx, y: sy, w: tw });
+    labelHits.push({ key: l.key, x0: sx - tw / 2, y0: sy - 10, x1: sx + tw / 2, y1: sy + 10 });
     ctx.strokeStyle = l.active ? '#c4f26a' : '#ffffff99'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(sx, sy + 10); ctx.lineTo(sx, sy0 - size * 0.33 - 2); ctx.stroke();
     ctx.fillStyle = l.active ? '#c4f26a' : '#111319e6';
@@ -177,6 +181,54 @@ function drawTagLabels(mode, size) {
     ctx.textAlign = 'center'; ctx.fillText(l.text, sx, sy + 0.5);
   }
   ctx.textAlign = 'start';
+}
+
+/** Key of the tag label under the pointer (labels drawn later are on top). */
+function hitLabel(mx, my) {
+  for (let i = labelHits.length - 1; i >= 0; i--) {
+    const h = labelHits[i];
+    if (mx >= h.x0 && mx <= h.x1 && my >= h.y0 && my <= h.y1) return h.key;
+  }
+  return null;
+}
+
+/** Panel: the videos that score highest for a tag ('tag:k') or the text search ('search'). */
+function showTagList(key) {
+  const isSearch = key === 'search';
+  const k = isSearch ? -1 : Number(key.slice(4));
+  const score = isSearch ? search?.pct : tagScores[k];
+  if (!score) { setStatus('タグを計算中です。終わってからもう一度クリックしてください'); return; }
+  const name = isSearch ? `“${search.query}”` : tags[k].name;
+  const threshold = scoreThreshold(key);
+  const ranked = items.slice().sort((a, b) => score[b.idx] - score[a.idx]);
+  const hits = ranked.filter(it => score[it.idx] >= threshold).length;
+  const top = ranked.slice(0, Math.min(60, Math.max(12, hits)));
+  selected = null;
+  releaseFrames();
+  tagList = { key, name, ids: new Set(top.map(it => it.id)) };
+  if ([...ui.color.options].some(o => o.value === key)) ui.color.value = key;
+  ui.panel.innerHTML = `
+    <div class="panel-head"><button type="button" class="ghost deselect" title="閉じる (Esc)">閉じる ×</button></div>
+    <h3 class="list-title"></h3>
+    <p class="list-note"></p>
+    <div class="nn"></div>`;
+  ui.panel.querySelector('.list-title').textContent = `${name} の上位 ${top.length} 本`;
+  ui.panel.querySelector('.list-note').textContent = isSearch
+    ? `文章との類似度が高い順（上位10% = ${hits} 本）。数字は全候補の中での位置（%）。クリックでその動画の詳細`
+    : `「${name}」らしさが高い順（50%以上 = ${hits} / ${items.length} 本）。クリックでその動画の詳細`;
+  ui.panel.querySelector('.deselect').addEventListener('click', clearSelection);
+  ui.panel.querySelector('.nn').replaceChildren(...top.map(it => {
+    const b = document.createElement('button');
+    b.innerHTML = '<img alt=""><span><b></b><em></em></span>';
+    b.querySelector('img').src = it.video.thumbnail;
+    b.querySelector('b').textContent = `${Math.round(score[it.idx] * 100)}%`;
+    b.querySelector('em').textContent = it.mu === null ? (it.shown ? '表示済み' : '') : `μ ${it.mu.toFixed(2)}`;
+    b.title = it.video.title;
+    b.addEventListener('click', () => select(it));
+    return b;
+  }));
+  ui.panel.scrollTop = 0;
+  draw();
 }
 
 function refreshColorOptions() {
@@ -207,10 +259,12 @@ function fillChips(it) {
   if (!box) return;
   box.replaceChildren(...tags.map((t, k) => {
     const p = tagScores[k]?.[it.idx];
-    const chip = document.createElement('span');
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.addEventListener('click', () => showTagList(`tag:${k}`));
     chip.className = `chip${p >= 0.5 ? ' on' : ''}`;
     chip.textContent = p === undefined ? `${t.name} …` : `${t.name} ${Math.round(p * 100)}%`;
-    chip.title = `${t.pos}\n vs \n${t.neg}`;
+    chip.title = `クリックで「${t.name}」の上位一覧\n${t.pos}\n vs \n${t.neg}`;
     return chip;
   }));
 }
@@ -297,7 +351,7 @@ function draw() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
   const size = Number(ui.size.value), mode = ui.color.value;
-  const neighbours = selected ? new Set(selected.nn.map(n => n.it.id)) : null;
+  const neighbours = selected ? new Set(selected.nn.map(n => n.it.id)) : tagList ? tagList.ids : null;
   // draw low scores first so the interesting ones sit on top
   const scored = scoreOf(items[0] ?? {}, mode) !== null;
   const order = items.slice().sort(scored ? (a, b) => scoreOf(a, mode) - scoreOf(b, mode) : (a, b) => (a.mu ?? -1e9) - (b.mu ?? -1e9));
@@ -307,7 +361,7 @@ function draw() {
     const bw = size, bh = size * 0.66;
     const score = scoreOf(it, mode);
     const dimByScore = score !== null && score < scoreThreshold(mode) && it !== selected?.it;
-    ctx.globalAlpha = (neighbours && !neighbours.has(it.id) && it !== selected.it) ? 0.25 : dimByScore ? 0.3 : 1;
+    ctx.globalAlpha = (neighbours && !neighbours.has(it.id) && it !== selected?.it) ? 0.25 : dimByScore ? 0.3 : 1;
     let border = '#2a2c33';
     if (score !== null) border = scoreColor(score);
     if (mode === 'mu' && it.mu !== null) border = muColor(it.mu);
@@ -374,8 +428,9 @@ function select(it) {
 }
 
 function clearSelection() {
-  if (!selected) return;
+  if (!selected && !tagList) return;
   selected = null;
+  tagList = null;
   releaseFrames();
   ui.panel.innerHTML = placeholderHTML;
   draw();
@@ -416,7 +471,7 @@ function renderPanel() {
   const { it, nn, all } = selected;
   const fmt = (m, s) => m === null ? 'μ —（未学習）' : `μ ${m.toFixed(2)} ± ${s.toFixed(2)}`;
   ui.panel.innerHTML = `
-    <div class="panel-head"><button type="button" class="ghost deselect" title="選択解除 (Esc)">選択解除 ×</button></div>
+    <div class="panel-head">${tagList ? '<button type="button" class="ghost back-list"></button>' : ''}<button type="button" class="ghost deselect" title="選択解除 (Esc)">選択解除 ×</button></div>
     <div class="sel"><img alt=""><div class="t"></div><div class="s"></div><div class="tag-chips"></div><a target="_blank" rel="noopener">Open ↗</a></div>
     <h3 style="margin-top:14px">動画フレーム（4区間の中央）</h3>
     <div class="frames"></div>
@@ -429,6 +484,8 @@ function renderPanel() {
   ui.panel.querySelector('.sel .s').textContent = `${fmt(it.mu, it.sigma)} · ${it.shown ? '表示済み' : '未表示'}${popText}`;
   ui.panel.querySelector('.sel a').href = it.video.pageUrl;
   ui.panel.querySelector('.deselect').addEventListener('click', clearSelection);
+  const back = ui.panel.querySelector('.back-list');
+  if (back) { back.textContent = `← ${tagList.name} の一覧`; back.addEventListener('click', () => showTagList(tagList.key)); }
   fillChips(it);
   showFrames(it);
   ui.panel.querySelector('.nn').replaceChildren(...nn.map(({ it: o, sim }) => {
@@ -466,7 +523,9 @@ canvas.addEventListener('pointermove', e => {
     if (Math.abs(dx) + Math.abs(dy) > 3) { drag.moved = true; canvas.classList.add('dragging'); }
     if (drag.moved) { view.tx = drag.tx + dx; view.ty = drag.ty + dy; draw(); return; }
   }
-  const it = pick(e.offsetX, e.offsetY);
+  const onLabel = hitLabel(e.offsetX, e.offsetY);
+  canvas.style.cursor = onLabel ? 'pointer' : '';
+  const it = onLabel ? null : pick(e.offsetX, e.offsetY);
   if (it !== hover) { hover = it; draw(); }
   if (it) {
     ui.tip.hidden = false;
@@ -479,7 +538,11 @@ canvas.addEventListener('pointermove', e => {
 });
 canvas.addEventListener('pointerup', e => {
   canvas.classList.remove('dragging');
-  if (drag && !drag.moved) { const it = pick(e.offsetX, e.offsetY); if (it) select(it); else clearSelection(); }
+  if (drag && !drag.moved) {
+    const key = hitLabel(e.offsetX, e.offsetY);
+    const it = key ? null : pick(e.offsetX, e.offsetY);
+    if (key) showTagList(key); else if (it) select(it); else clearSelection();
+  }
   drag = null;
 });
 canvas.addEventListener('pointerleave', () => { hover = null; ui.tip.hidden = true; draw(); });

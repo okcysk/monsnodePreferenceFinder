@@ -41,6 +41,12 @@
 .legend .tag-grad{background:linear-gradient(90deg,#2a2c33,#c4f26a)}
 .tag-chips{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0}
 .chip{padding:2px 7px;border-radius:999px;border:1px solid #454751;color:var(--muted);font:600 11px system-ui,sans-serif;font-variant-numeric:tabular-nums}
+.chip{background:none;cursor:pointer}
+.chip:hover{border-color:#8a8d96;color:#e6e7ea}
+.list-title{margin:0 0 4px}
+.list-note{margin:0;color:var(--muted);font-size:11px}
+.panel-head{gap:8px}
+.panel-head .back-list{margin-right:auto;padding:4px 10px;font-size:12px}
 .chip.on{border-color:var(--accent);color:var(--accent);background:#c4f26a1a}
 .tag-editor-inner{width:min(900px,100%)}
 .tag-help{color:var(--muted);font-size:12px;margin:8px 0 10px}
