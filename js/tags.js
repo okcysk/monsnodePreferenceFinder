@@ -41,17 +41,18 @@ export const DEFAULT_TAGS = [
   { since: 5, name: '芸術的', pos: 'an artistic fine-art nude photograph with dramatic lighting', neg: 'an amateur smartphone video | a professional porn video | a casual selfie' },
   // added in tag set version 6
   { since: 6, name: '楽しそう', pos: 'a woman smiling and laughing happily', neg: 'a woman with a neutral, expressionless face | a woman with her eyes closed | a woman whose face is not visible' },
-  // added in tag set version 8
-  { since: 8, name: 'メガネ', pos: 'a woman wearing eyeglasses | a person with glasses on her face', neg: 'a woman with no glasses | a woman whose face is not visible' },
+  // added in tag set version 9
+  { since: 9, name: '複数人', pos: 'two or more people together in one scene', neg: 'a single woman alone | a close-up of one person' },
 ];
 
 /** Bumped when default tags change; saved tag lists are updated once (see mergeNewDefaults). */
-export const DEFAULT_TAGS_VERSION = 8;
+export const DEFAULT_TAGS_VERSION = 9;
 
 /** Default tags that were dropped: removed from saved lists only if the user left them exactly as shipped. */
 export const REMOVED_DEFAULTS = [
   { removedIn: 6, name: 'おしっこ', pos: 'a woman urinating | a person peeing', neg: 'a woman taking a shower | a nude woman posing | a wet woman in a bath' },
   { removedIn: 8, name: 'おしゃれ', pos: 'a fashionable, stylish woman in trendy clothes', neg: 'a woman in plain everyday clothes | a nude woman | a woman in lingerie' },
+  { removedIn: 9, name: 'メガネ', pos: 'a woman wearing eyeglasses | a person with glasses on her face', neg: 'a woman with no glasses | a woman whose face is not visible' },
 ];
 
 /**
