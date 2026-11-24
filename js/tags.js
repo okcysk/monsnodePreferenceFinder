@@ -19,7 +19,27 @@ export const DEFAULT_TAGS = [
     pos: 'a photo of a caucasian person | a photo of a western person',
     neg: 'a photo of an east asian person | a photo of a japanese person',
   },
+  // added in tag set version 2. Contrast captions name the nearby alternatives (nude, underwear, swimsuit),
+  // otherwise e.g. "swimsuit vs ordinary clothes" claims most lightly dressed thumbnails.
+  { since: 2, name: '浴室', pos: 'a photo taken in a bathroom | a shower room', neg: 'a photo taken in another room' },
+  { since: 2, name: 'ベッド', pos: 'a person on a bed | a bedroom', neg: 'a photo without a bed' },
+  { since: 2, name: '車内', pos: 'a photo taken inside a car', neg: 'a photo taken indoors in a room' },
+  { since: 2, name: '水着', pos: 'a person in a swimsuit at a beach or pool | a person wearing a bikini', neg: 'a person in clothes indoors | a naked person | a person wearing lingerie' },
+  { since: 2, name: 'コスプレ', pos: 'a person in a cosplay costume | a person dressed as an anime character', neg: 'a person in everyday clothes | a person in underwear | a naked person' },
+  { since: 2, name: 'ランジェリー', pos: 'a woman wearing lingerie', neg: 'a nude woman | a woman wearing a t-shirt | a woman in a bikini' },
+  { since: 2, name: '金髪', pos: 'a person with blonde hair', neg: 'a person with dark hair' },
+  { since: 2, name: '自撮り', pos: 'a selfie video taken with a smartphone | a mirror selfie', neg: 'a professionally filmed video | a video filmed by another person' },
 ];
+
+/** Bumped when default tags are added; saved tag lists get the new defaults once (see mergeNewDefaults). */
+export const DEFAULT_TAGS_VERSION = 2;
+
+/** Append default tags newer than `version` that the saved list does not have (matched by name). */
+export function mergeNewDefaults(saved, version) {
+  const names = new Set(saved.map(t => t.name));
+  const added = DEFAULT_TAGS.filter(t => (t.since ?? 1) > version && !names.has(t.name)).map(({ name, pos, neg }) => ({ name, pos, neg }));
+  return { tags: [...saved, ...added], added: added.length };
+}
 
 export const splitPrompts = s => String(s || '').split('|').map(t => t.trim()).filter(Boolean);
 

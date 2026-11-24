@@ -8,7 +8,7 @@ import { popularityScores } from './popularity.js';
 import { resolveVideoUrl } from './scraper.js';
 import { grabFrames } from './frames.js';
 import { Embedder } from './embed.js';
-import { DEFAULT_TAGS, scoreTags, scoreText } from './tags.js';
+import { DEFAULT_TAGS, DEFAULT_TAGS_VERSION, mergeNewDefaults, scoreTags, scoreText } from './tags.js';
 
 const $ = id => document.getElementById(id);
 const canvas = $('canvas'), ctx = canvas.getContext('2d');
@@ -24,7 +24,7 @@ let frameURLs = [];
 let muMax = 1;
 let popInfo = null;     // {auc, shrink, known} from popularity.js, null without ranking data
 // Zero-shot tags / text search (CLIP text tower, loaded on first use)
-let tags = DEFAULT_TAGS.map(t => ({ ...t }));
+let tags = DEFAULT_TAGS.map(({ name, pos, neg }) => ({ name, pos, neg }));
 let tagScores = [];        // per tag: Float32Array aligned with items (probability 0–1)
 let search = null;         // { query, score: Float32Array (cosine), pct: Float32Array (rank 0–1) }
 let tagAnchors = [];       // per tag: index of its most representative item (or -1)
@@ -77,7 +77,15 @@ async function load() {
   refreshColorOptions();
   layout();
   const savedTags = await db.kvGet('tags');
-  if (Array.isArray(savedTags) && savedTags.length) tags = savedTags;
+  if (Array.isArray(savedTags) && savedTags.length) {
+    tags = savedTags;
+    const version = (await db.kvGet('tagsVersion')) ?? 1;
+    if (version < DEFAULT_TAGS_VERSION) {
+      ({ tags } = mergeNewDefaults(savedTags, version));
+      await db.kvSet('tags', tags);
+    }
+  }
+  await db.kvSet('tagsVersion', DEFAULT_TAGS_VERSION);
   computeTags();
 }
 
