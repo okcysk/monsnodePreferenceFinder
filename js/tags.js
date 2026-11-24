@@ -47,10 +47,12 @@ export const DEFAULT_TAGS = [
   { since: 11, name: 'ロマンチック', pos: 'a romantic and intimate moment between a couple | a couple embracing tenderly', neg: 'a woman alone | a rough, explicit sex scene | a group of people' },
   // added in tag set version 14
   { since: 14, name: '店舗', pos: 'a photo taken inside a shop or store | a store interior with shelves', neg: 'a photo taken in a bedroom | a photo taken in a bathroom | a photo taken outdoors' },
+  // added in tag set version 15. Only the typical "digital render" look: realistic AI images are not detectable from a thumbnail.
+  { since: 15, name: 'AI生成', pos: 'a digital artwork made by AI, CGI render', neg: 'a real photograph | a real video frame | a real photo with a beauty filter | a real professional photo' },
 ];
 
 /** Bumped when default tags change; saved tag lists are updated once (see mergeNewDefaults). */
-export const DEFAULT_TAGS_VERSION = 14;
+export const DEFAULT_TAGS_VERSION = 15;
 
 /** Default tags that were dropped (or replaced by a newer version): removed from saved lists only if the user left them exactly as shipped. */
 export const REMOVED_DEFAULTS = [
