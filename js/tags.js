@@ -43,10 +43,12 @@ export const DEFAULT_TAGS = [
   { since: 6, name: '楽しそう', pos: 'a woman smiling and laughing happily', neg: 'a woman with a neutral, expressionless face | a woman with her eyes closed | a woman whose face is not visible' },
   // added in tag set version 9 (two or more people), changed in version 10 to three or more
   { since: 10, name: '複数人', pos: 'a group of several people together | three or more people', neg: 'a single person alone | a couple of two people' },
+  // added in tag set version 11
+  { since: 11, name: 'ロマンチック', pos: 'a romantic and intimate moment between a couple | a couple embracing tenderly', neg: 'a woman alone | a rough, explicit sex scene | a group of people' },
 ];
 
 /** Bumped when default tags change; saved tag lists are updated once (see mergeNewDefaults). */
-export const DEFAULT_TAGS_VERSION = 10;
+export const DEFAULT_TAGS_VERSION = 11;
 
 /** Default tags that were dropped (or replaced by a newer version): removed from saved lists only if the user left them exactly as shipped. */
 export const REMOVED_DEFAULTS = [
