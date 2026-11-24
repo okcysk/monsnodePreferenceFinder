@@ -2,6 +2,7 @@ import { normCdf, logNormCdf, millsRatio, cholesky, rankingToPairs, GPPL } from 
 import { computeRound } from './engine.js';
 import { makeRng, nextBeta } from './acquisition.js';
 import { pcaProject } from './pca.js';
+import { fitLogistic, auc, popularityScores, rankScore } from './popularity.js';
 
 const out = document.getElementById('out');
 const results = [];
@@ -31,6 +32,30 @@ check('Mills ratio large-negative ≈ -z', near(millsRatio(-20), 20.0499, 1e-2),
   check('variance shrinks near data, ≈ prior far away', variance[1] < 0.9 && near(far.variance[0], 1, 1e-6));
 }
 {
+  const X = [[0], [1], [2]];
+  const m = new GPPL({ ell: 1 }).fit(X, [[1, 0]], { mean: [0, 0.5, 0] });
+  const far = m.predict([[50]], [0.8]);
+  check('prior mean: far from data μ = prior mean', near(far.mu[0], 0.8, 1e-6), String(far.mu[0]));
+  const withPrior = m.predict(X, [0, 0.5, 0]).mu, plain = new GPPL({ ell: 1 }).fit(X, [[1, 0]]).predict(X).mu;
+  check('prior mean: winner stays above loser', withPrior[1] > withPrior[0] && plain[1] > plain[0]);
+}
+{
+  const rng = makeRng(7);
+  const X = Array.from({ length: 200 }, () => [rng() * 2 - 1, rng() * 2 - 1]);
+  const y = X.map(x => (x[0] + 0.3 * x[1] > 0.2 ? 1 : 0));
+  const model = fitLogistic(X, y);
+  check('logistic: separable data AUC > 0.97', auc(X.map(model), y) > 0.97);
+  check('AUC of random scores ≈ 0.5', Math.abs(auc(X.map(() => rng()), y) - 0.5) < 0.12);
+  check('rankScore: 24h #1 > 7d #1 > 7d last', rankScore('24h', 0, 20) > rankScore('7d', 0, 120) && rankScore('7d', 0, 120) > rankScore('7d', 119, 120));
+  const ids = X.map((_, i) => 'p' + i), Z = new Map(ids.map((id, i) => [id, X[i]]));
+  const known = new Map(ids.filter((_, i) => y[i] && i % 2).map(id => [id, 0.7]));
+  const pop = popularityScores(ids, Z, known);
+  const unk = ids.filter(id => !known.has(id));
+  const unkAuc = auc(unk.map(id => pop.score.get(id)), unk.map(id => y[ids.indexOf(id)]));
+  check('popularity: spreads to unranked videos (AUC > 0.9)', unkAuc > 0.9 && pop.shrink > 0.9, `cv ${pop.auc.toFixed(2)}, unranked ${unkAuc.toFixed(2)}`);
+  check('popularity: ranked videos ≥ 0.675', [...known.keys()].every(id => pop.score.get(id) >= 0.675));
+}
+{
   const rng = makeRng(3);
   const vecs = Array.from({ length: 40 }, () => Array.from({ length: 10 }, () => rng()));
   const P = pcaProject(vecs, 9);
@@ -42,7 +67,7 @@ check('Mills ratio large-negative ≈ -z', near(millsRatio(-20), 20.0499, 1e-2),
 }
 
 // --- synthetic user simulation ---
-function simulate(seed, { N = 300, D = 32, rounds = 30, noise = 0.05 } = {}) {
+function simulate(seed, { N = 300, D = 32, rounds = 30, noise = 0.05, popWeight = 0, popCorr = 0.7 } = {}) {
   const rng = makeRng(seed);
   const gauss = () => Math.sqrt(-2 * Math.log(rng() + 1e-12)) * Math.cos(2 * Math.PI * rng());
   const embeddings = new Map();
@@ -56,11 +81,17 @@ function simulate(seed, { N = 300, D = 32, rounds = 30, noise = 0.05 } = {}) {
   const g = id => { const x = embeddings.get(id); return centers.reduce((s, c, k) => s + weights[k] * Math.exp(-x.reduce((a, v, i) => a + (v - c[i]) ** 2, 0) / 0.8), 0); };
   const ordered = [...embeddings.keys()].sort((a, b) => g(b) - g(a));
   const top5pct = new Set(ordered.slice(0, Math.ceil(N * 0.05)));
+  // Synthetic 'ranking': 60 videos chosen by a utility that is only partly the user's (popCorr).
+  const other = new Map([...embeddings.keys()].map(id => [id, gauss()]));
+  const gs = [...embeddings.keys()].map(g); const gm = gs.reduce((a, b) => a + b, 0) / N, gsd = Math.sqrt(gs.reduce((a, b) => a + (b - gm) ** 2, 0) / N);
+  const crowd = id => popCorr * (g(id) - gm) / gsd + Math.sqrt(1 - popCorr ** 2) * other.get(id);
+  const rankedIds = [...embeddings.keys()].sort((a, b) => crowd(b) - crowd(a)).slice(0, 60);
+  const popularity = new Map(rankedIds.map((id, r) => [id, rankScore('7d', r, 60)]));
 
   const pairs = []; const shown = new Set(); let beta = 2;
   let hitRound = null; let best = null;
   for (let r = 1; r <= rounds; r++) {
-    const res = computeRound({ embeddings, pairs, shown, beta, pcaDim: 24, rng });
+    const res = computeRound({ embeddings, pairs, shown, beta, pcaDim: 24, rng, popularity, popWeight });
     best = res.best;
     if (best && top5pct.has(best) && hitRound === null) hitRound = r;
     res.selection.forEach(id => shown.add(id));
@@ -68,7 +99,7 @@ function simulate(seed, { N = 300, D = 32, rounds = 30, noise = 0.05 } = {}) {
     pairs.push(...rankingToPairs(order));
     beta = nextBeta(beta);
   }
-  const final = computeRound({ embeddings, pairs, shown, beta, pcaDim: 24, rng });
+  const final = computeRound({ embeddings, pairs, shown, beta, pcaDim: 24, rng, popularity, popWeight });
   return { hitRound, finalBest: final.best, rankOfFinal: ordered.indexOf(final.best) + 1, shown: shown.size };
 }
 
@@ -78,6 +109,18 @@ const ms = performance.now() - t0;
 sims.forEach((s, i) => log(`  sim${i + 1}: top5% reached at round ${s.hitRound ?? '—'}, final best true rank ${s.rankOfFinal}/300, shown ${s.shown}`));
 const hits = sims.filter(s => s.hitRound !== null && s.hitRound <= 30).length;
 check('synthetic user: best reaches top 5% within 30 rounds (≥4/5 runs)', hits >= 4, `${hits}/5, ${(ms / 5).toFixed(0)} ms per 30-round run`);
+
+// Popularity prior on a synthetic user whose taste is correlated (0.7) with the crowd's.
+{
+  const seeds = [1, 2, 3, 4, 5, 6, 7, 8];
+  const mean = arr => arr.reduce((a, b) => a + b, 0) / arr.length;
+  const runs = w => seeds.map(seed => simulate(seed, { popWeight: w, rounds: 20 }));
+  const off = runs(0), on = runs(0.6), anti = seeds.map(seed => simulate(seed, { popWeight: 0.6, popCorr: 0, rounds: 20 }));
+  const hr = r => r.hitRound ?? 21;
+  log(`  popularity prior: mean round to reach top 5% — off ${mean(off.map(hr)).toFixed(1)}, on ${mean(on.map(hr)).toFixed(1)}, on but crowd unrelated ${mean(anti.map(hr)).toFixed(1)} (21 = not within 20)`);
+  check('popularity prior helps when taste matches the crowd', mean(on.map(hr)) <= mean(off.map(hr)));
+  check('popularity prior does not break learning when it is unrelated (≥6/8 reach top 5% in 20 rounds)', anti.filter(r => r.hitRound !== null).length >= 6);
+}
 
 const failed = results.filter(r => !r.pass).length;
 log(`\n${results.length - failed}/${results.length} passed`, failed ? 'ng' : 'ok');

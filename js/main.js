@@ -1,5 +1,6 @@
 import * as db from './db.js';
-import { collectPool, resolveVideoUrl, mediaProxyUrl } from './scraper.js';
+import { collectPool, collectRanking, resolveVideoUrl, mediaProxyUrl } from './scraper.js';
+import { mergePop } from './popularity.js';
 import { Embedder } from './embed.js';
 import { computeRound, topSeen } from './engine.js';
 import { rankingToPairs } from './gppl.js';
@@ -18,7 +19,7 @@ const ui = {
   grid: $('grid'), actions: $('actions'), undo: $('undo'), skip: $('skip'), submit: $('submit'),
   empty: $('empty'), results: $('results'), resultsTitle: $('results-title'),
   resultsList: $('results-list'), closeResults: $('close-results'),
-  help: $('help'), helpButton: $('help-button'), embedMode: $('embed-mode'), clipDevice: $('clip-device'),
+  help: $('help'), helpButton: $('help-button'), embedMode: $('embed-mode'), clipDevice: $('clip-device'), popWeight: $('pop-weight'),
   notice: $('notice'),
 };
 
@@ -30,7 +31,9 @@ const frameEmb = new Map();
 const frameFailed = new Set();   // frame grab failed this session (not retried until reload)
 let embedMode = 'thumb';
 let clipDevice = 'wasm';         // 'wasm' (q8, ~90MB) or 'webgpu' (fp32, ~350MB, faster)
-const saveSettings = () => db.kvSet('settings', { embedMode, clipDevice });
+const POP_WEIGHTS = { off: 0, low: 0.3, mid: 0.6, high: 1 };   // popularity prior strength (GP prior mean scale)
+let popLevel = 'mid';
+const saveSettings = () => db.kvSet('settings', { embedMode, clipDevice, popLevel });
 /** Embeddings are stored per CLIP backend (q8 WASM vs fp32 WebGPU give different vectors). */
 const storeOf = kind => (clipDevice === 'webgpu' ? `${kind}Gpu` : kind);
 /** id → Float32Array for the active mode. Only embedded, playable videos: this IS the candidate pool. */
@@ -75,7 +78,15 @@ const save = () => db.kvSet('session', session);
 const roundArgs = (shown = new Set(session.shown)) => ({
   embeddings: pool, pairs: session.pairs.filter(([w, l]) => pool.has(w) && pool.has(l)),
   shown, beta: session.beta, excluded: new Set(session.excluded),
+  popularity: popularityMap(), popWeight: POP_WEIGHTS[popLevel] ?? 0,
 });
+/** id → ranking score for videos that appeared in a monsnode ranking (popularity.js). */
+function popularityMap() {
+  const m = new Map();
+  for (const v of videos.values()) if (v.pop && pool.has(v.id)) m.set(v.id, v.pop.s);
+  return m;
+}
+const popLabel = pop => (pop ? `人気 ${pop.period} ${pop.rank}位` : '');
 
 // ---------- boot ----------
 async function boot() {
@@ -85,6 +96,8 @@ async function boot() {
   const settings = await db.kvGet('settings');
   embedMode = settings?.embedMode === 'frames' ? 'frames' : 'thumb';
   clipDevice = settings?.clipDevice === 'webgpu' ? 'webgpu' : 'wasm';
+  popLevel = settings?.popLevel in POP_WEIGHTS ? settings.popLevel : 'mid';
+  ui.popWeight.value = popLevel;
   ui.embedMode.value = embedMode;
   ui.clipDevice.value = clipDevice;
   try {
@@ -139,6 +152,16 @@ ui.clipDevice.addEventListener('change', async () => {
   location.reload();
 });
 
+ui.popWeight.addEventListener('change', async () => {
+  popLevel = ui.popWeight.value;
+  await saveSettings();
+  if (pool.size >= MIN_POOL && !ui.grid.hidden) {
+    lastRound = session.pairs.length ? computeRound(roundArgs()) : lastRound;   // same four stay on screen
+    updateHeader();
+  }
+  setStatus(`人気の事前情報: ${ui.popWeight.selectedOptions[0].textContent}（次のラウンドから反映）`);
+});
+
 ui.embedMode.addEventListener('change', async () => {
   embedMode = ui.embedMode.value;
   await saveSettings();
@@ -155,12 +178,24 @@ ui.start.addEventListener('click', async () => {
     const query = ui.query.value.trim();
     const target = Number(ui.target.value);
     setStatus('Monsnode から一覧を取得中…', 0);
-    const items = await collectPool({ target, query, onProgress: (n, page) => setStatus(`一覧取得中… ${n}/${target} 本（${page} ページ）`, n / target) });
+    const listed = await collectPool({ target, query, onProgress: (n, page) => setStatus(`一覧取得中… ${n}/${target} 本（${page} ページ）`, n / target) });
+    // Popularity rankings: added to the pool when browsing the new list; with a search query only
+    // the videos already collected get their ranking (the rankings are not about the query).
+    setStatus('人気ランキングを取得中…');
+    const ranked = await collectRanking({ onProgress: (n, period) => setStatus(`人気ランキングを取得中… ${period} まで ${n} 本`) }).catch(() => []);
+    const byId = new Map(listed.map(v => [v.id, v]));
+    for (const r of ranked) {
+      if (byId.has(r.id)) byId.get(r.id).pop = r.pop;
+      else if (!query) byId.set(r.id, r);
+      else if (videos.has(r.id)) byId.set(r.id, { ...videos.get(r.id), pop: r.pop });
+    }
+    const items = [...byId.values()].map(v => ({ ...videos.get(v.id), ...v, pop: mergePop(videos.get(v.id)?.pop, v.pop) }));
     const fresh = items.filter(v => !videos.has(v.id));
     for (const v of items) videos.set(v.id, v);
     await db.putMany('videos', items);
     if (query !== session.query) { session.query = query; await save(); }
-    setStatus(`候補 ${videos.size} 本（新規 ${fresh.length}）。埋め込みを開始します…`, pool.size / videos.size);
+    const rankedIn = items.filter(v => v.pop).length;
+    setStatus(`候補 ${videos.size} 本（新規 ${fresh.length}・人気ランキング ${rankedIn} 本）。埋め込みを開始します…`, pool.size / videos.size);
     startEmbedding();
   } catch (error) {
     setStatus(`一覧取得に失敗: ${error.message}`);
@@ -266,12 +301,13 @@ function makeCell(id, index) {
     ${keepBest ? '<span class="tag">暫定1位</span>' : ''}
     <video muted loop playsinline preload="auto"></video>
     <div class="rank" hidden></div>
-    <div class="label"><span class="key">${index + 1}</span><span class="title"></span>
+    <div class="label"><span class="key">${index + 1}</span><span class="title"></span>${v?.pop ? '<span class="pop"></span>' : ''}
       <button class="exclude" type="button" title="この動画は評価しない (Q)">評価しない</button>
       <button class="mute" type="button" title="ミュート切替 (M)">🔇</button><a target="_blank" rel="noopener">Open ↗</a></div>
     <div class="excluded-mark">評価しない<small>クリック / Q で戻す</small></div>
     <div class="seek"><input type="range" min="0" max="1000" value="0" aria-label="シークバー"><span class="time">0:00 / 0:00</span><span class="speed">1.00x</span></div>`;
   cell.querySelector('.title').textContent = v?.title ?? id;
+  if (v?.pop) { const b = cell.querySelector('.pop'); b.textContent = `🔥${v.pop.period} ${v.pop.rank}位`; b.title = `monsnode の人気ランキング（${v.pop.period}）で ${v.pop.rank} 位`; }
   const link = cell.querySelector('a');
   link.href = v?.pageUrl ?? '#';
   link.addEventListener('click', e => e.stopPropagation());
@@ -496,7 +532,7 @@ function showResults(converged = false) {
     li.innerHTML = '<img alt=""><span class="t"></span><span class="s"></span><a target="_blank" rel="noopener">Open ↗</a>';
     li.querySelector('img').src = v?.thumbnail ?? '';
     li.querySelector('.t').textContent = v?.title ?? id;
-    li.querySelector('.s').textContent = `μ ${lastRound.mu.get(id).toFixed(2)} ± ${lastRound.sigma.get(id).toFixed(2)}`;
+    li.querySelector('.s').textContent = `μ ${lastRound.mu.get(id).toFixed(2)} ± ${lastRound.sigma.get(id).toFixed(2)}${v?.pop ? ` · ${popLabel(v.pop)}` : ''}`;
     li.querySelector('a').href = v?.pageUrl ?? '#';
     return li;
   }));

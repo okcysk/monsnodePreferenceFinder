@@ -3,7 +3,9 @@
 //   GET /search?q=&page=   → { videos: [{id, redirectId, title, pageUrl, redirectUrl, thumbnail}] }
 //   GET /resolve?id=       → { videoUrl }   (video.twimg.com MP4)
 //   GET /media?src=        → MP4 stream proxy (fallback when direct playback fails)
+//   GET /search?ranking=1&period=24h|3d|7d&page=  → ranking pages (page 0 = first page)
 // Thumbnails (pbs.twimg.com) send CORS headers, so they are fetched directly for CLIP.
+import { POP_PERIODS, rankScore } from './popularity.js';
 
 const API = (window.GPPL_API_BASE || '').replace(/\/+$/, '');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -37,6 +39,31 @@ export async function collectPool({ target = 300, query = '', startPage = 1, del
     await sleep(delayMs);
   }
   return out.slice(0, target);
+}
+
+/**
+ * Videos in monsnode's popularity rankings, each with `pop = {s, period, rank, seenAt}`.
+ * Pages that fail or are empty are skipped (a period may simply have no second page).
+ */
+export async function collectRanking({ delayMs = 400, onProgress } = {}) {
+  const byId = new Map();
+  for (const { period, pages } of POP_PERIODS) {
+    const list = [];
+    for (const page of pages) {
+      try {
+        const data = await api(`/search?ranking=1&period=${period}&page=${page}`);
+        for (const v of data.videos || []) if (v.thumbnail && v.redirectId && !list.some(x => x.id === v.id)) list.push(v);
+      } catch { /* no such page */ }
+      await sleep(delayMs);
+    }
+    const seenAt = Date.now();
+    list.forEach((v, rank) => {
+      const pop = { s: rankScore(period, rank, list.length), period, rank: rank + 1, seenAt };
+      if (!byId.has(v.id) || byId.get(v.id).pop.s < pop.s) byId.set(v.id, { ...v, pop });
+    });
+    onProgress?.(byId.size, period);
+  }
+  return [...byId.values()];
 }
 
 const mediaCache = new Map();

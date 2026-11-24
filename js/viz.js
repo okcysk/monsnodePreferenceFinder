@@ -4,6 +4,7 @@ import * as db from './db.js';
 import { pcaProject } from './pca.js';
 import { TSNE } from './tsne.js';
 import { computeRound } from './engine.js';
+import { popularityScores } from './popularity.js';
 import { resolveVideoUrl } from './scraper.js';
 import { grabFrames } from './frames.js';
 import { Embedder } from './embed.js';
@@ -21,6 +22,7 @@ const placeholderHTML = ui.panel.innerHTML;   // restored when the selection is 
 const frameCache = new Map();                  // id → Promise<Blob[]> (frames are fetched on demand)
 let frameURLs = [];
 let muMax = 1;
+let popInfo = null;     // {auc, shrink, known} from popularity.js, null without ranking data
 // Zero-shot tags / text search (CLIP text tower, loaded on first use)
 let tags = DEFAULT_TAGS.map(t => ({ ...t }));
 let tagScores = [];        // per tag: Float32Array aligned with items (probability 0–1)
@@ -50,19 +52,25 @@ async function load() {
   const shown = new Set(session.shown || []);
   let mu = null, sigma = null;
   const pairs = (session.pairs || []).filter(([w, l]) => pool.has(w) && pool.has(l));
-  if (pairs.length) ({ mu, sigma } = computeRound({ embeddings: pool, pairs, shown, beta: 0 }));
+  const popularity = new Map(embs.filter(e => videos.get(e.id).pop).map(e => [e.id, videos.get(e.id).pop.s]));
+  const popWeight = { off: 0, low: 0.3, mid: 0.6, high: 1 }[settings?.popLevel ?? 'mid'] ?? 0.6;
+  if (pairs.length) ({ mu, sigma } = computeRound({ embeddings: pool, pairs, shown, beta: 0, popularity, popWeight }));
 
   const pca48 = pcaProject(embs.map(e => e.vec), 48);
+  const pop = popularityScores(embs.map(e => e.id), new Map(embs.map((e, i) => [e.id, pca48[i]])), popularity);
+  popInfo = pop && { auc: pop.auc, shrink: pop.shrink, known: pop.known };
   items = embs.map((e, i) => {
     const img = new Image();
     img.src = videos.get(e.id).thumbnail || '';
     img.onload = draw;
-    return { id: e.id, video: videos.get(e.id), vec: e.vec, pca48: pca48[i], x: 0, y: 0, img, mu: mu?.get(e.id) ?? null, sigma: sigma?.get(e.id) ?? null, shown: shown.has(e.id) };
+    return { id: e.id, video: videos.get(e.id), vec: e.vec, pca48: pca48[i], x: 0, y: 0, img, mu: mu?.get(e.id) ?? null, sigma: sigma?.get(e.id) ?? null, shown: shown.has(e.id),
+      popScore: pop?.score.get(e.id) ?? null };
   });
   items.forEach((it, i) => { it.idx = i; });
   muMax = Math.max(1e-6, ...items.map(it => Math.abs(it.mu ?? 0)));
   setStatus(`${items.length} 本 · 512次元 → PCA ${pca48[0].length}次元 · 比較 ${pairs.length} 件`, 1);
-  window.__viz = { count: items.length, dim: embs[0].vec.length, pcaDim: pca48[0].length, pairs: pairs.length };
+  window.__viz = { count: items.length, dim: embs[0].vec.length, pcaDim: pca48[0].length, pairs: pairs.length, pop: popInfo };
+  refreshColorOptions();
   layout();
   const savedTags = await db.kvGet('tags');
   if (Array.isArray(savedTags) && savedTags.length) tags = savedTags;
@@ -106,7 +114,7 @@ async function runSearch(query) {
 
 function refreshColorOptions() {
   const current = ui.color.value;
-  const base = [['mu', '好き度 μ'], ['shown', '表示済み'], ['none', 'なし']];
+  const base = [['mu', '好き度 μ'], ['shown', '表示済み'], ...(popInfo ? [['pop', '人気（ランキング＋推定）']] : []), ['none', 'なし']];
   const extra = tags.map((t, k) => [`tag:${k}`, `タグ: ${t.name}${tagScores[k] ? '' : '（計算中）'}`]);
   if (search) extra.push(['search', `テキスト: ${search.query}`]);
   ui.color.replaceChildren(...[...base, ...extra].map(([v, label]) => new Option(label, v)));
@@ -117,6 +125,7 @@ function refreshColorOptions() {
 function scoreOf(it, mode) {
   if (mode.startsWith('tag:')) return tagScores[Number(mode.slice(4))]?.[it.idx] ?? null;
   if (mode === 'search' && search) return search.pct[it.idx];
+  if (mode === 'pop') return it.popScore;
   return null;
 }
 const scoreThreshold = mode => (mode === 'search' ? 0.9 : 0.5);
@@ -263,6 +272,9 @@ function drawLegend(mode) {
     ui.legend.innerHTML = s
       ? `「${escapeHTML(t.name)}」らしさ（CLIP ゼロショット・目安）<div class="bar-grad tag-grad"></div><div class="row"><span>0%</span><span>50%（未満は薄く）</span><span>100%</span></div>該当 ${s.filter(p => p >= 0.5).length} / ${s.length} 本`
       : 'タグを計算中…（初回はテキストモデル約65MBを読み込みます）';
+  } else if (mode === 'pop' && popInfo) {
+    ui.legend.innerHTML = `人気（monsnode ランキング＋embedding からの推定）<div class="bar-grad tag-grad"></div><div class="row"><span>低</span><span>50%以上＝ランキング入り</span><span>高</span></div>`
+      + `ランキング入り ${popInfo.known} 本・推定の当たり具合 AUC ${popInfo.auc.toFixed(2)}${popInfo.shrink > 0 ? '' : '（偶然と変わらないため推定は使っていません）'}`;
   } else if (mode === 'search' && search) {
     ui.legend.innerHTML = `「${escapeHTML(search.query)}」との類似度<div class="bar-grad tag-grad"></div><div class="row"><span>低</span><span>上位10%を強調</span><span>高</span></div>`;
   } else ui.legend.innerHTML = '';
@@ -345,7 +357,8 @@ function renderPanel() {
     <div class="hist"><h3>この動画と全候補の類似度分布</h3><canvas width="600" height="140"></canvas><p></p></div>`;
   ui.panel.querySelector('.sel img').src = it.video.thumbnail;
   ui.panel.querySelector('.sel .t').textContent = it.video.title;
-  ui.panel.querySelector('.sel .s').textContent = `${fmt(it.mu, it.sigma)} · ${it.shown ? '表示済み' : '未表示'}`;
+  const popText = it.video.pop ? ` · 人気 ${it.video.pop.period} ${it.video.pop.rank}位` : it.popScore !== null ? ` · 人気推定 ${Math.round(it.popScore * 100)}%` : '';
+  ui.panel.querySelector('.sel .s').textContent = `${fmt(it.mu, it.sigma)} · ${it.shown ? '表示済み' : '未表示'}${popText}`;
   ui.panel.querySelector('.sel a').href = it.video.pageUrl;
   ui.panel.querySelector('.deselect').addEventListener('click', clearSelection);
   fillChips(it);

@@ -12,7 +12,7 @@
 </head>
 <body>
 <header class="bar">
-  <div class="brand"><span class="mark">★</span><div>Preference Finder<small id="app-version" title="Pairwise GPPL">v0.6.0</small></div></div>
+  <div class="brand"><span class="mark">★</span><div>Preference Finder<small id="app-version" title="Pairwise GPPL">v0.7.0</small></div></div>
   <div class="setup">
     <input id="query" type="search" placeholder="検索語（空なら新着）">
     <select id="target" title="候補プールの本数">
@@ -27,6 +27,12 @@
     <select id="clip-device" title="CLIP の実行方式。変更するとページを再読み込みします">
       <option value="wasm" selected>CLIP: WASM（約90MB）</option>
       <option value="webgpu">CLIP: WebGPU（約350MB・速い）</option>
+    </select>
+    <select id="pop-weight" title="monsnode の人気ランキングを事前情報（GP の事前平均）として使う強さ。比較が増えるとあなたの回答が優先されます">
+      <option value="off">人気: 使わない</option>
+      <option value="low">人気: 弱</option>
+      <option value="mid" selected>人気: 中</option>
+      <option value="high">人気: 強</option>
     </select>
     <button id="start" class="primary">プール取得</button>
   </div>
