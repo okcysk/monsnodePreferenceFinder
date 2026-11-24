@@ -31,7 +31,7 @@ let tagAnchors = [];       // per tag: index of its most representative item (or
 let searchAnchor = -1;
 let simMatrix = null;      // N×N cosine similarities (512-D), built once per load
 let labelHits = [];        // clickable label boxes from the last draw: {key, x0, y0, x1, y1}
-let tagList = null;        // {key, name, ids: Set} while the panel lists a tag's top videos
+let tagList = null;        // {key, name, ids: Set, prevColor} while the panel lists a tag's top videos
 let textEmbedder = null;
 const getTextEmbedder = () => textEmbedder ??= new Embedder({
   preload: false,
@@ -194,6 +194,8 @@ function hitLabel(mx, my) {
 
 /** Panel: the videos that score highest for a tag ('tag:k') or the text search ('search'). */
 function showTagList(key) {
+  // Clicking the tag that is already selected (its list is open) deselects it.
+  if (tagList?.key === key && !selected) { clearSelection(); return; }
   const isSearch = key === 'search';
   const k = isSearch ? -1 : Number(key.slice(4));
   const score = isSearch ? search?.pct : tagScores[k];
@@ -205,10 +207,12 @@ function showTagList(key) {
   const top = ranked.slice(0, Math.min(60, Math.max(12, hits)));
   selected = null;
   releaseFrames();
-  tagList = { key, name, ids: new Set(top.map(it => it.id)) };
+  // remember the colour mode from before any tag was selected, to restore it on deselect
+  const prevColor = tagList ? tagList.prevColor : ui.color.value;
+  tagList = { key, name, ids: new Set(top.map(it => it.id)), prevColor };
   if ([...ui.color.options].some(o => o.value === key)) ui.color.value = key;
   ui.panel.innerHTML = `
-    <div class="panel-head"><button type="button" class="ghost deselect" title="閉じる (Esc)">閉じる ×</button></div>
+    <div class="panel-head"><button type="button" class="ghost deselect" title="タグの選択を解除 (Esc・もう一度タグをクリック)">選択解除 ×</button></div>
     <h3 class="list-title"></h3>
     <p class="list-note"></p>
     <div class="nn"></div>`;
@@ -429,6 +433,8 @@ function select(it) {
 
 function clearSelection() {
   if (!selected && !tagList) return;
+  // Deselecting a tag also puts the colour mode back, unless it was changed by hand meanwhile.
+  if (tagList && ui.color.value === tagList.key && [...ui.color.options].some(o => o.value === tagList.prevColor)) ui.color.value = tagList.prevColor;
   selected = null;
   tagList = null;
   releaseFrames();
