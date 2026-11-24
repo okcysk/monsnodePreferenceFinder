@@ -49,10 +49,12 @@ export const DEFAULT_TAGS = [
   { since: 14, name: '店舗', pos: 'a photo taken inside a shop or store | a store interior with shelves', neg: 'a photo taken in a bedroom | a photo taken in a bathroom | a photo taken outdoors' },
   // added in tag set version 17
   { since: 17, name: '美しい', pos: 'a stunningly beautiful woman, like a model', neg: 'an average-looking woman | a woman whose face is not visible | a blurry low-quality image' },
+  // added in tag set version 18 (captions say "adult woman" on purpose)
+  { since: 18, name: 'かわいい', pos: 'an adorable, cute-looking adult woman with a charming face', neg: 'a mature, elegant adult woman | a woman whose face is not visible | a blurry low-quality image' },
 ];
 
 /** Bumped when default tags change; saved tag lists are updated once (see mergeNewDefaults). */
-export const DEFAULT_TAGS_VERSION = 17;
+export const DEFAULT_TAGS_VERSION = 18;
 
 /** Default tags that were dropped (or replaced by a newer version): removed from saved lists only if the user left them exactly as shipped. */
 export const REMOVED_DEFAULTS = [
