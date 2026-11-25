@@ -15,14 +15,22 @@ input{width:180px}
 .brand small{display:block;color:var(--muted);font-size:9px;letter-spacing:.13em}
 .mark{display:grid;place-items:center;width:29px;height:29px;border-radius:9px;background:var(--accent);color:var(--accent-ink)}
 .setup,.session{display:flex;align-items:center;gap:8px}
-.status{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;color:var(--muted);font-size:12px}
+/* the setup controls give way (scroll sideways) before the progress text and bar do; long option labels are cut in the closed select (the list shows them in full) */
+.setup{min-width:0;overflow-x:auto;scrollbar-width:thin}
+.setup>*{flex:none}
+.setup button{white-space:nowrap}
+.setup select{max-width:8.5em;text-overflow:ellipsis}
+/* progress text + bar: a strip of its own under the header, so the header controls can never squeeze it */
+.status{position:fixed;z-index:10;top:53px;left:0;right:0;height:22px;display:flex;align-items:center;padding:0 12px;color:var(--muted);font-size:12px;background:var(--panel);border-bottom:1px solid var(--line)}
+.session{margin-left:auto}
 .status span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .meter{height:4px;border-radius:2px;background:#2a2c33;overflow:hidden}
 #meter-fill{height:100%;width:0;background:var(--accent);transition:width .2s}
+.status .meter{position:absolute;left:0;right:0;bottom:-1px;height:3px;border-radius:0;background:transparent}
 #round{color:var(--muted);font-size:12px;white-space:nowrap}
 #best-thumb{width:52px;height:36px;object-fit:cover;border-radius:6px;border:2px solid var(--accent)}
 
-.grid{position:absolute;top:52px;bottom:52px;left:0;right:0;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:2px;background:#282a30}
+.grid{position:absolute;top:76px;bottom:52px;left:0;right:0;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:2px;background:#282a30}
 .grid[hidden]{display:none}
 .cell{position:relative;min-width:0;min-height:0;background:var(--bg);overflow:hidden;cursor:pointer;outline:3px solid transparent;outline-offset:-3px;transition:outline-color .15s}
 .cell:hover{outline-color:#555862}
@@ -43,7 +51,7 @@ input{width:180px}
 .actions[hidden]{display:none}
 .hint{margin-right:auto;color:var(--muted);font-size:12px}
 
-.empty{position:fixed;inset:52px 0 0;display:grid;place-content:center;justify-items:center;text-align:center;padding:24px;gap:6px}
+.empty{position:fixed;inset:76px 0 0;display:grid;place-content:center;justify-items:center;text-align:center;padding:24px;gap:6px}
 .empty[hidden]{display:none}
 .empty p{color:var(--muted);max-width:520px}
 
@@ -99,7 +107,7 @@ kbd{display:inline-block;min-width:20px;padding:1px 6px;border:1px solid #555862
 .cell .err-actions{display:flex;gap:8px;justify-content:center}
 .cell.excluded .err{display:none}
 /* one-off notices (e.g. why WebGPU fell back to WASM) */
-.notice{position:fixed;z-index:15;top:60px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;max-width:min(720px,calc(100vw - 32px));padding:10px 12px;border-radius:10px;background:#3b2f14f2;border:1px solid #8a6d2a;color:#ffe6a8;font-size:13px;box-shadow:0 8px 24px #000a}
+.notice{position:fixed;z-index:15;top:84px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;max-width:min(720px,calc(100vw - 32px));padding:10px 12px;border-radius:10px;background:#3b2f14f2;border:1px solid #8a6d2a;color:#ffe6a8;font-size:13px;box-shadow:0 8px 24px #000a}
 .notice[hidden]{display:none}
 .notice button{flex:none;padding:2px 8px;color:#ffe6a8;border-color:#8a6d2a}
 .grid.busy{opacity:.45;pointer-events:none;transition:opacity .1s}

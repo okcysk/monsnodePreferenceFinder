@@ -80,6 +80,7 @@ async function checkWebGPUOption() {
 
 function setStatus(text, fraction = null) {
   ui.status.textContent = text;
+  ui.status.title = text;   // the header may cut it: the full text on hover
   if (fraction !== null) ui.meter.style.width = `${Math.round(Math.max(0, Math.min(1, fraction)) * 100)}%`;
 }
 const save = () => db.kvSet('session', session);

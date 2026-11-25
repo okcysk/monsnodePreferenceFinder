@@ -12,7 +12,7 @@
 </head>
 <body>
 <header class="bar">
-  <div class="brand"><span class="mark">★</span><div>Preference Finder<small id="app-version" title="Pairwise GPPL">v0.9.16</small></div></div>
+  <div class="brand"><span class="mark">★</span><div>Preference Finder<small id="app-version" title="Pairwise GPPL">v0.9.17</small></div></div>
   <div class="setup">
     <input id="query" type="search" placeholder="検索語（空なら新着）">
     <select id="target" title="候補プールの本数">
@@ -23,7 +23,7 @@
     <select id="embed-mode" title="embedding の作り方。フレームは動画の一部を読み込むため時間と通信量が増えます。EmbeddingGemma 2 は4フレーム＋サムネを1本の動画として埋め込む別モデル（初回 約280MB／WebGPU 約880MB、1本あたり数秒〜数十秒）">
       <option value="thumb" selected>サムネのみ</option>
       <option value="frames">サムネ＋動画4フレーム</option>
-      <option value="gemma">動画（EmbeddingGemma 2・重い）</option>
+      <option value="gemma">動画（Gemma 2・重い）</option>
     </select>
     <select id="clip-device" title="埋め込みモデルの実行方式（CLIP・EmbeddingGemma 2 共通）。変更するとページを再読み込みします">
       <option value="wasm" selected>計算: WASM（CLIP 約90MB）</option>
