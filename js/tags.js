@@ -94,7 +94,7 @@ const dot = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] 
 /**
  * @param {{name: string, pos: string, neg: string}[]} tags
  * @param {ArrayLike<number>[]} imageVecs  L2-normalised CLIP image embeddings
- * @param {(texts: string[]) => Promise<Float32Array[]>} embedTexts
+ * @param {(texts: string[]) => Promise<Float32Array[]>} embedTexts  CLIP text embeddings
  * @returns {Promise<Float32Array[]>}  per tag, a probability in [0, 1] for each image
  */
 export async function scoreTags(tags, imageVecs, embedTexts) {

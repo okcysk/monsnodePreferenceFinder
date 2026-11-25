@@ -11,6 +11,9 @@ const MIN_POOL = 12;          // embedded videos needed before the first round
 const STREAK_TO_FINISH = 3;   // best ranked #1 this many rounds in a row → show results
 const FRAME_COUNT = 4;        // frames per video in 'frames' mode (averaged with the thumbnail)
 const FRAME_CONCURRENCY = 4;  // videos whose frames are fetched at the same time (network-bound)
+const GEMMA_FRAMES = 4;       // frames per video in 'gemma' mode (same positions as 'frames'; one clip embedding)
+const GEMMA_CONCURRENCY = 2;  // the model is the bottleneck there: fetch the next video's frames while one runs
+const MODE_LABEL = { thumb: 'サムネ', frames: 'サムネ＋フレーム', gemma: '動画（EmbeddingGemma 2）' };
 
 const $ = id => document.getElementById(id);
 const ui = {
@@ -25,10 +28,15 @@ const ui = {
 
 /** id → {id, title, pageUrl, redirectUrl, thumbnail} */
 const videos = new Map();
-/** Embedding stores per mode: 'thumb' = CLIP of the thumbnail, 'frames' = mean of thumbnail + FRAME_COUNT video frames. */
+/**
+ * Embedding stores per mode: 'thumb' = CLIP of the thumbnail, 'frames' = mean of thumbnail + FRAME_COUNT video frames,
+ * 'gemma' = EmbeddingGemma 2 of the clip (GEMMA_FRAMES frames as one video, plus the thumbnail) — another model, another space.
+ */
 const thumbEmb = new Map();
 const frameEmb = new Map();
-const frameFailed = new Set();   // frame grab failed this session (not retried until reload)
+const gemmaEmb = new Map();
+const embOf = mode => (mode === 'gemma' ? gemmaEmb : mode === 'frames' ? frameEmb : thumbEmb);
+const failedIn = { frames: new Set(), gemma: new Set() };   // per mode: failed this session (not retried until reload)
 let embedMode = 'thumb';
 let clipDevice = 'wasm';         // 'wasm' (q8, ~90MB) or 'webgpu' (fp32, ~350MB, faster)
 const POP_WEIGHTS = { off: 0, low: 0.3, mid: 0.6, high: 1 };   // popularity prior strength (GP prior mean scale)
@@ -39,7 +47,7 @@ const saveSettings = () => db.kvSet('settings', { embedMode, clipDevice, popLeve
 const storeOf = kind => (clipDevice === 'webgpu' ? `${kind}Gpu` : kind);
 /** id → Float32Array for the active mode. Only embedded, playable videos: this IS the candidate pool. */
 let pool = new Map();
-let embedder = null;
+const embedders = {};   // 'clip' / 'gemma' → Embedder (one worker each, created when first needed)
 let embedding = false;
 let lastRound = null;   // result of computeRound for the current screen
 
@@ -65,7 +73,7 @@ async function checkWebGPUOption() {
   else if (!(await navigator.gpu.requestAdapter().catch(() => null))) problem = 'GPU アダプタを取得できません';
   if (problem) {
     option.disabled = true;
-    option.textContent = 'CLIP: WebGPU（この環境では使えません）';
+    option.textContent = '計算: WebGPU（この環境では使えません）';
     ui.clipDevice.title = `WebGPU: ${problem}`;
   }
 }
@@ -95,7 +103,7 @@ async function boot() {
   const saved = await db.kvGet('session');
   if (saved) session = { ...newSession(), ...saved };
   const settings = await db.kvGet('settings');
-  embedMode = settings?.embedMode === 'frames' ? 'frames' : 'thumb';
+  embedMode = settings?.embedMode in MODE_LABEL ? settings.embedMode : 'thumb';
   clipDevice = settings?.clipDevice === 'webgpu' ? 'webgpu' : 'wasm';
   popLevel = settings?.popLevel in POP_WEIGHTS ? settings.popLevel : 'mid';
   ui.popWeight.value = popLevel;
@@ -110,6 +118,7 @@ async function boot() {
   checkWebGPUOption();
   for (const e of await db.getAll(storeOf('embeddings'))) thumbEmb.set(e.id, e.vec);
   for (const e of await db.getAll(storeOf('frameEmbeddings'))) frameEmb.set(e.id, e.vec);
+  for (const e of await db.getAll(storeOf('gemmaEmbeddings'))) gemmaEmb.set(e.id, e.vec);
   buildPool();
   ui.query.value = session.query || '';
   setStatus(videos.size ? `候補 ${videos.size} 本 / 埋め込み済み ${pool.size} 本` : '「プール取得」で候補を集めてください', videos.size ? pool.size / videos.size : 0);
@@ -126,7 +135,7 @@ async function boot() {
 /** Candidate pool for the active embedding mode. A new Map each time so the PCA cache is rebuilt. */
 function buildPool() {
   const broken = new Set(session.broken);
-  const src = embedMode === 'frames' ? frameEmb : thumbEmb;
+  const src = embOf(embedMode);
   pool = new Map([...src].filter(([id]) => videos.has(id) && !broken.has(id)));
 }
 
@@ -136,7 +145,7 @@ function waitForPool() {
   ui.actions.hidden = true;
   ui.empty.hidden = false;
   lastRound = null;
-  setStatus(`${embedMode === 'frames' ? 'サムネ＋フレーム' : 'サムネ'}の埋め込みが ${MIN_POOL} 本たまるとラウンドを始めます（現在 ${pool.size} 本）`);
+  setStatus(`${MODE_LABEL[embedMode]}の埋め込みが ${MIN_POOL} 本たまるとラウンドを始めます（現在 ${pool.size} 本）`);
 }
 
 /** Switch the embedding used by GPPL. Comparisons are kept: they are about videos, not features. */
@@ -180,7 +189,8 @@ ui.embedMode.addEventListener('change', async () => {
   embedMode = ui.embedMode.value;
   await saveSettings();
   refreshForMode();
-  if (pool.size >= MIN_POOL) setStatus(`${embedMode === 'frames' ? 'サムネ＋動画フレーム' : 'サムネのみ'}に切り替えました（プール ${pool.size} 本）`);
+  if (pool.size >= MIN_POOL) setStatus(`${MODE_LABEL[embedMode]}に切り替えました（プール ${pool.size} 本）`);
+  if (embedMode === 'gemma') showNotice(`動画（EmbeddingGemma 2）: 初回はモデル（WASM 約280MB／WebGPU 約880MB）を取得します。1本あたり WebGPU で約10秒、WASM ではさらに長くかかるので、埋め込みは裏で少しずつ進みます（${MIN_POOL} 本たまるとラウンド開始）。`);
   startEmbedding();
   updateHeader();
 });
@@ -219,15 +229,16 @@ ui.start.addEventListener('click', async () => {
 });
 
 // ---------- embedding ----------
-function startEmbedding() {
-  if (embedding) return;
-  embedding = true;
-  embedder ??= new Embedder({
+/** One worker per model, created when first needed. */
+function getEmbedder(model) {
+  const modelName = model === 'gemma' ? 'EmbeddingGemma 2' : 'CLIP';
+  return embedders[model] ??= new Embedder({
+    model,
     device: clipDevice,
-    onModelProgress: p => setStatus(`CLIP モデルを読み込み中… ${p.file ?? ''} ${Math.round(p.progress ?? 0)}%`, (p.progress ?? 0) / 100),
+    onModelProgress: p => setStatus(`${modelName} モデルを読み込み中… ${p.file ?? ''} ${Math.round(p.progress ?? 0)}%`, (p.progress ?? 0) / 100),
     onReady: async (device, fallbackReason) => {
-      if (device === clipDevice) { setStatus(`CLIP 準備完了（${device}）`); return; }
-      // WebGPU was requested but is unavailable: vectors would be q8, so switch the setting (and stores) to WASM,
+      if (device === clipDevice) { setStatus(`${modelName} 準備完了（${device}）`); return; }
+      // WebGPU was requested but is unavailable: vectors would differ, so switch the setting (and stores) to WASM,
       // and keep the reason visible after the reload.
       try { sessionStorage.setItem(NOTICE_KEY, `WebGPU を使えなかったため WASM に戻しました。理由: ${fallbackReason || '不明'}`); } catch { /* ignore */ }
       clipDevice = 'wasm';
@@ -235,18 +246,56 @@ function startEmbedding() {
       location.reload();
     },
   });
+}
+
+function startEmbedding() {
+  if (embedding) return;
+  embedding = true;
   const mode = embedMode;
+  const embedder = getEmbedder(mode === 'gemma' ? 'gemma' : 'clip');
+  const clip = getEmbedder('clip');
   (async () => {
     const broken = new Set(session.broken);
-    const src = mode === 'frames' ? frameEmb : thumbEmb;
-    const todo = [...videos.values()].filter(v => !src.has(v.id) && !broken.has(v.id) && v.thumbnail && !(mode === 'frames' && frameFailed.has(v.id)));
-    let done = 0, failed = 0;
-    const label = mode === 'frames' ? 'サムネ＋フレーム埋め込み中' : '埋め込み中';
+    const src = embOf(mode);
+    // gemma mode also fills in missing CLIP thumbnail vectors (the map's tags use them)
+    const needed = v => !src.has(v.id) || (mode === 'gemma' && !thumbEmb.has(v.id));
+    const todo = [...videos.values()].filter(v => needed(v) && !broken.has(v.id) && v.thumbnail && !failedIn[mode]?.has(v.id));
+    let done = 0, failed = 0, thumbOnly = 0;
+    const label = mode === 'thumb' ? '埋め込み中' : `${MODE_LABEL[mode]}の埋め込み中`;
     const embedOne = async v => {
       try {
+        if (mode === 'gemma') {
+          if (!gemmaEmb.has(v.id)) {
+            // The frames (same positions as 'frames') go in as one video, the thumbnail as a poster image in the same
+            // sample. When the frames cannot be grabbed (URL not resolvable, very long video…), the thumbnail alone is
+            // embedded by the same model, so the video stays in the pool instead of being dropped.
+            const [frames, poster] = await Promise.all([
+              resolveVideoUrl(v).then(url => grabFrames(url, { count: GEMMA_FRAMES, size: 320 })).catch(error => {
+                console.debug('[gppl] gemma: frames unavailable, thumbnail only', v.id, error?.message);
+                return null;
+              }),
+              fetch(v.thumbnail, { credentials: 'omit' }).then(r => (r.ok ? r.blob() : null)).catch(() => null),
+            ]);
+            if (!frames && !poster) throw new Error('no frames and no thumbnail');
+            const vec = frames ? await embedder.embedVideo(frames, frames[0]?.duration, poster) : await embedder.embedBlob(poster);
+            if (!frames) thumbOnly++;
+            gemmaEmb.set(v.id, vec);
+            await db.put(storeOf('gemmaEmbeddings'), { id: v.id, vec });
+            if (embedMode === 'gemma') pool.set(v.id, vec);
+          }
+          // The map's tags / text search use CLIP on the thumbnail (the captions are tuned for CLIP), so keep that too.
+          if (!thumbEmb.has(v.id)) {
+            try {
+              const t = await clip.embedThumbnail(v.id, v.thumbnail);
+              thumbEmb.set(v.id, t);
+              await db.put(storeOf('embeddings'), { id: v.id, vec: t });
+            } catch { /* tags only: not needed for the pool */ }
+          }
+          return;
+        }
         let thumb = thumbEmb.get(v.id);
         if (!thumb) {
-          thumb = await embedder.embedThumbnail(v.id, v.thumbnail);
+          thumb = await clip.embedThumbnail(v.id, v.thumbnail);
           thumbEmb.set(v.id, thumb);
           await db.put(storeOf('embeddings'), { id: v.id, vec: thumb });
           if (embedMode === 'thumb') pool.set(v.id, thumb);
@@ -254,7 +303,7 @@ function startEmbedding() {
         if (mode === 'frames') {
           // Seek-and-grab a few frames (only the needed byte ranges are downloaded), then average with the thumbnail.
           const frames = await grabFrames(await resolveVideoUrl(v), { count: FRAME_COUNT });
-          const vecs = await embedder.embedBlobs(frames);   // all frames in one batched model call
+          const vecs = await clip.embedBlobs(frames);   // all frames in one batched model call
           const vec = meanEmbedding([thumb, ...vecs]);
           frameEmb.set(v.id, vec);
           await db.put(storeOf('frameEmbeddings'), { id: v.id, vec });
@@ -263,22 +312,26 @@ function startEmbedding() {
       } catch (error) {
         failed++;
         console.debug('[gppl] embedding failed', mode, v.id, error?.message);
-        if (mode === 'frames') frameFailed.add(v.id);
+        failedIn[mode]?.add(v.id);
+      } finally {
+        done++;
+        progress();
       }
-      done++;
+    };
+    const progress = () => {
       if (embedMode !== mode) return;   // switched away: the new mode owns the status line
-      setStatus(`${label} ${done}/${todo.length}（失敗 ${failed}）・プール ${pool.size} 本${embedder.device ? ` · ${embedder.device}` : ''}`, done / todo.length);
+      setStatus(`${label} ${done}/${todo.length}（失敗 ${failed}${thumbOnly ? `・サムネのみ ${thumbOnly}` : ''}）・プール ${pool.size} 本${embedder.device ? ` · ${embedder.device}` : ''}`, done / todo.length);
       if (ui.grid.hidden && pool.size >= MIN_POOL) nextRound();
     };
     // Frame grabbing is network-bound: several videos at a time; CLIP batches still run one by one in the worker.
     let next = 0;
-    await Promise.all(Array.from({ length: mode === 'frames' ? FRAME_CONCURRENCY : 1 }, async () => {
+    await Promise.all(Array.from({ length: mode === 'frames' ? FRAME_CONCURRENCY : mode === 'gemma' ? GEMMA_CONCURRENCY : 1 }, async () => {
       while (next < todo.length && embedMode === mode) await embedOne(todo[next++]);
     }));
     embedding = false;
     if (embedMode !== mode) { startEmbedding(); return; }   // mode switched mid-way: continue for the new mode
     if (failed && pool.size < MIN_POOL) setStatus(`埋め込みに失敗しました（失敗 ${failed}）。時間をおいて再度「プール取得」を試してください。`);
-    else setStatus(`候補 ${videos.size} 本 / 埋め込み済み ${pool.size} 本（${mode === 'frames' ? 'サムネ＋フレーム' : 'サムネ'}）${failed ? `・失敗 ${failed}` : ''}`, 1);
+    else setStatus(`候補 ${videos.size} 本 / 埋め込み済み ${pool.size} 本（${MODE_LABEL[mode]}）${failed ? `・失敗 ${failed}` : ''}`, 1);
   })();
 }
 

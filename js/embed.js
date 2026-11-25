@@ -1,8 +1,14 @@
 // Page-side wrapper around embed-worker.js: fetches thumbnails and queues them one by one.
 export class Embedder {
-  /** @param {{onModelProgress?, onReady?, device?: 'wasm'|'webgpu', preload?: boolean}} opts  preload=false: load the image model only when first used (e.g. the map, which only needs text) */
-  constructor({ onModelProgress, onReady, device = 'wasm', preload = true } = {}) {
-    this.worker = new Worker(new URL('./embed-worker.js', import.meta.url), { type: 'module' });
+  /**
+   * @param {{onModelProgress?, onReady?, device?: 'wasm'|'webgpu', preload?: boolean, model?: 'clip'|'gemma'}} opts
+   *   preload=false: load the image model only when first used (e.g. the map, which only needs text)
+   *   model: 'clip' = CLIP ViT-B/32 (embed-worker.js), 'gemma' = EmbeddingGemma 2 (gemma-worker.js, also embeds videos)
+   */
+  constructor({ onModelProgress, onReady, device = 'wasm', preload = true, model = 'clip', workerQuery = '' } = {}) {
+    this.model = model;
+    const file = model === 'gemma' ? './gemma-worker.js' : './embed-worker.js';
+    this.worker = new Worker(new URL(file + workerQuery, import.meta.url), { type: 'module' });
     this.pending = new Map();
     this.seq = 0;
     this.device = null;
@@ -43,9 +49,14 @@ export class Embedder {
     return this.request(blobs);
   }
 
+  /** EmbeddingGemma 2 only: one embedding for a whole clip (its frames, plus the thumbnail as a poster image). */
+  embedVideo(frames, duration, poster = null) {
+    return this.send({ type: 'embed-video', frames, duration, poster }).then(v => v[0]);
+  }
+
   request(blobs) { return this.send({ type: 'embed', blobs }); }
 
-  /** CLIP text embeddings (L2-normalised), in the same space as the image embeddings. */
+  /** Text embeddings (L2-normalised), in the same space as the image / video embeddings of this model. */
   embedTexts(texts) { return this.send({ type: 'embed-text', texts }); }
 
   send(message) {

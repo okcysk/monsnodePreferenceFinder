@@ -49,6 +49,7 @@ export function grabFrames(url, { count = 4, metaTimeoutMs = 8000, timeoutMs = 2
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const blob = await new Promise((resolve, reject) => canvas.toBlob(b => b ? resolve(b) : reject(new Error('toBlob failed')), 'image/jpeg', 0.9));
       blob.time = time;   // seconds into the video (shown by the map)
+      blob.duration = duration;
       blobs.push(blob);
     }
     return blobs;

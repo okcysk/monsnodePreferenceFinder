@@ -35,6 +35,11 @@ let simMatrix = null;      // N×N cosine similarities (512-D), built once per l
 let labelHits = [];        // clickable label boxes from the last draw: {key, x0, y0, x1, y1}
 let tagList = null;        // {key, name, ids: Set, prevColor} while the panel lists a tag's top videos
 let textEmbedder = null;
+let embedModel = 'clip';   // 'gemma' when the map shows EmbeddingGemma 2 vectors
+// Tags and text search always use CLIP (the captions are tuned for it). With EmbeddingGemma 2 on the map they score
+// each video's CLIP thumbnail vector, kept alongside: Gemma's own text side agreed only loosely with the tuned captions
+// (correlation ≈ 0.46 on 56 videos) and its 50% point drifted per tag, so many tags matched none or nearly all videos.
+let clipVecs = null;       // id → CLIP thumbnail vector (gemma mode only)
 const getTextEmbedder = () => textEmbedder ??= new Embedder({
   preload: false,
   onModelProgress: p => setStatus(`テキストモデルを読み込み中… ${Math.round(p.progress ?? 0)}%`, (p.progress ?? 0) / 100),
@@ -48,11 +53,15 @@ async function load() {
   const session = await db.kvGet('session') || { pairs: [], shown: [], broken: [] };
   const broken = new Set(session.broken || []);
   const settings = await db.kvGet('settings');
-  const mode = settings?.embedMode === 'frames' ? 'frames' : 'thumb';
+  const mode = ['frames', 'gemma'].includes(settings?.embedMode) ? settings.embedMode : 'thumb';
   const gpu = settings?.clipDevice === 'webgpu';
-  const store = (mode === 'frames' ? 'frameEmbeddings' : 'embeddings') + (gpu ? 'Gpu' : '');
+  embedModel = mode === 'gemma' ? 'gemma' : 'clip';
+  clipVecs = mode === 'gemma' ? new Map((await db.getAll('embeddings' + (gpu ? 'Gpu' : ''))).map(e => [e.id, e.vec])) : null;
+  const store = ({ thumb: 'embeddings', frames: 'frameEmbeddings', gemma: 'gemmaEmbeddings' })[mode] + (gpu ? 'Gpu' : '');
   const embs = (await db.getAll(store)).filter(e => videos.has(e.id) && !broken.has(e.id));
-  document.querySelector('.brand small').textContent = `CLIP 512D (${mode === 'frames' ? 'サムネ＋4フレーム' : 'サムネ'} · ${gpu ? 'WebGPU' : 'WASM'}) → PCA 48D → 2D`;
+  document.querySelector('.brand small').textContent = mode === 'gemma'
+    ? `EmbeddingGemma 2 768D (動画4フレーム＋サムネ · ${gpu ? 'WebGPU' : 'WASM'}) → PCA 48D → 2D`
+    : `CLIP 512D (${mode === 'frames' ? 'サムネ＋4フレーム' : 'サムネ'} · ${gpu ? 'WebGPU' : 'WASM'}) → PCA 48D → 2D`;
   if (embs.length < 3) { setStatus('埋め込み済みの動画がまだありません（3本以上必要）'); return; }
 
   const pool = new Map(embs.map(e => [e.id, e.vec]));
@@ -95,12 +104,21 @@ async function load() {
 }
 
 // ---------- tags / text search ----------
+/** Vectors to score captions against (CLIP), and which items have none (gemma mode, thumbnail not embedded). */
+function tagInputs() {
+  const vecs = items.map(it => (clipVecs ? clipVecs.get(it.id) : it.vec) ?? null);
+  const dim = vecs.find(Boolean)?.length ?? 512;
+  const zero = new Float32Array(dim);
+  return { vecs: vecs.map(v => v ?? zero), missing: vecs.map(v => !v) };
+}
+
 async function computeTags() {
   refreshColorOptions();
   if (!tags.length) { tagScores = []; draw(); return; }
   try {
     const t0 = performance.now();
-    tagScores = await scoreTags(tags, items.map(it => it.vec), embedTexts);
+    const { vecs, missing } = tagInputs();
+    tagScores = (await scoreTags(tags, vecs, embedTexts)).map(p => p && p.map((x, i) => (missing[i] ? 0 : x)));
     tagAnchors = tagScores.map(p => representative(p, 0.5));
     setStatus(`タグを計算しました（${tags.length} 個 · ${Math.round(performance.now() - t0)} ms）`, 1);
     window.__vizTags = tags.map((t, k) => ({ name: t.name, count: tagScores[k] ? tagScores[k].filter(p => p >= 0.5).length : null,
@@ -117,7 +135,8 @@ async function runSearch(query) {
   query = query.trim();
   if (!query) { search = null; searchAnchor = -1; refreshColorOptions(); draw(); return; }
   try {
-    const score = await scoreText(query, items.map(it => it.vec), embedTexts);
+    const { vecs, missing } = tagInputs();
+    const score = (await scoreText(query, vecs, embedTexts)).map((x, i) => (missing[i] ? -1 : x));
     const order = [...score.keys()].sort((a, b) => score[a] - score[b]);
     const pct = new Float32Array(score.length);
     order.forEach((i, r) => { pct[i] = r / Math.max(1, order.length - 1); });
@@ -400,7 +419,7 @@ function drawLegend(mode) {
   } else if (mode.startsWith('tag:')) {
     const k = Number(mode.slice(4)), t = tags[k], s = tagScores[k];
     ui.legend.innerHTML = s
-      ? `「${escapeHTML(t.name)}」らしさ（CLIP ゼロショット・目安）<div class="bar-grad tag-grad"></div><div class="row"><span>0%</span><span>50%（未満は薄く）</span><span>100%</span></div>該当 ${s.filter(p => p >= 0.5).length} / ${s.length} 本`
+      ? `「${escapeHTML(t.name)}」らしさ（CLIP ゼロショット${embedModel === 'gemma' ? '・サムネで判定' : ''}・目安）<div class="bar-grad tag-grad"></div><div class="row"><span>0%</span><span>50%（未満は薄く）</span><span>100%</span></div>該当 ${s.filter(p => p >= 0.5).length} / ${s.length} 本`
       : 'タグを計算中…（初回はテキストモデル約65MBを読み込みます）';
   } else if (mode === 'pop' && popInfo) {
     ui.legend.innerHTML = `人気（monsnode ランキング＋embedding からの推定）<div class="bar-grad tag-grad"></div><div class="row"><span>低</span><span>50%以上＝ランキング入り</span><span>高</span></div>`
@@ -486,7 +505,7 @@ function renderPanel() {
     <button type="button" class="play-quad">▶ この動画と近傍を4画面で再生</button>
     <h3 style="margin-top:14px">動画フレーム（4区間の中央）</h3>
     <div class="frames"></div>
-    <h3 style="margin-top:14px">512次元空間の近傍 Top 12（コサイン類似度）</h3>
+    <h3 style="margin-top:14px">${embedModel === 'gemma' ? 768 : 512}次元空間の近傍 Top 12（コサイン類似度）</h3>
     <div class="nn"></div>
     <div class="hist"><h3>この動画と全候補の類似度分布</h3><canvas width="600" height="140"></canvas><p></p></div>`;
   ui.panel.querySelector('.sel img').src = it.video.thumbnail;

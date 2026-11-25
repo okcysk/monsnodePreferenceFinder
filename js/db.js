@@ -1,9 +1,10 @@
 // Minimal IndexedDB wrapper. Stores: videos (id), kv (session state, settings) and embeddings:
 //   embeddings / frameEmbeddings          CLIP q8 on WASM   (thumbnail / thumbnail + video frames)
 //   embeddingsGpu / frameEmbeddingsGpu    CLIP fp32 on WebGPU
+//   gemmaEmbeddings / gemmaEmbeddingsGpu  EmbeddingGemma 2 (q4 on WASM / fp16 on WebGPU) of 4 frames + thumbnail
 // q8 and fp32 vectors of the same image differ (cos ≈ 0.9), so they are never mixed in one pool.
 const DB_NAME = 'monsnode-gppl';
-const VERSION = 3;
+const VERSION = 4;
 let dbPromise;
 
 function open() {
@@ -14,7 +15,7 @@ function open() {
       if (!db.objectStoreNames.contains('videos')) db.createObjectStore('videos', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('embeddings')) db.createObjectStore('embeddings', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
-      for (const name of ['frameEmbeddings', 'embeddingsGpu', 'frameEmbeddingsGpu'])
+      for (const name of ['frameEmbeddings', 'embeddingsGpu', 'frameEmbeddingsGpu', 'gemmaEmbeddings', 'gemmaEmbeddingsGpu'])
         if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, { keyPath: 'id' });
     };
     req.onsuccess = () => {

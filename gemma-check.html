@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ja">
+<head><meta charset="utf-8"><title>Gemma check</title>
+<style>body{font:14px/1.5 system-ui,sans-serif;background:#111;color:#eee;padding:16px}</style></head>
+<body>
+<h1>EmbeddingGemma 2 smoke test</h1>
+<p>合成画像と合成「動画」（フレーム列）を埋め込み、768次元・L2正規化・文章と近いものが近いことを確認します。モデル初回取得あり（約280MB）。</p>
+<pre id="out">running…</pre>
+<script type="module">
+import { Embedder } from './js/embed.js';
+const out = document.getElementById('out');
+const log = s => { out.textContent += '\n' + s; };
+const frame = (draw, w = 384, h = 216) => { const c = new OffscreenCanvas(w, h); const g = c.getContext('2d'); draw(g, w, h); return c.convertToBlob({ type: 'image/jpeg' }); };
+const red = await frame((g, w, h) => { g.fillStyle = '#d22'; g.fillRect(0, 0, w, h); });
+// a white ball moving left → right over a blue background
+const params = new URLSearchParams(location.search);
+const nFrames = Number(params.get('frames')) || 8;
+const moving = await Promise.all([...Array(nFrames).keys()].map(i => frame((g, w, h) => { g.fillStyle = '#036'; g.fillRect(0, 0, w, h); g.fillStyle = '#fff'; g.beginPath(); g.arc(30 + i * 320 / nFrames, h / 2, 25, 0, 7); g.fill(); })));
+const cos = (x, y) => x.reduce((s, v, i) => s + v * y[i], 0);
+const t0 = performance.now();
+const e = new Embedder({ model: 'gemma', device: params.get('device') || 'wasm', workerQuery: params.get('tokens') ? `?tokens=${params.get('tokens')}` : '', onModelProgress: p => { out.firstChild.textContent = `loading ${p.file} ${Math.round(p.progress)}%`; } });
+try {
+  const [tRed, tBlue] = await e.embedTexts(['a plain red image', 'a white ball on a dark blue background']);
+  const t1 = performance.now();
+  log(`texts done ${(t1 - t0).toFixed(0)}ms (${e.device})`);
+  const a = await e.embedBlob(red);
+  const t2 = performance.now();
+  log(`image done ${(t2 - t1).toFixed(0)}ms`);
+  const v = await e.embedVideo(moving, 8);
+  const t3 = performance.now();
+  log(`video done ${(t3 - t2).toFixed(0)}ms`);
+  const vp = await e.embedVideo(moving, 8, red);
+  const t4 = performance.now();
+  log(`device=${e.device} dim=${a.length} norm=${Math.hypot(...a).toFixed(4)} load+2 texts=${(t1 - t0).toFixed(0)}ms image=${(t2 - t1).toFixed(0)}ms video(8f)=${(t3 - t2).toFixed(0)}ms video+poster=${(t4 - t3).toFixed(0)}ms`);
+  log(`cos(redImg, "red")=${cos(a, tRed).toFixed(3)} cos(redImg, "ball")=${cos(a, tBlue).toFixed(3)}`);
+  log(`cos(video, "red")=${cos(v, tRed).toFixed(3)} cos(video, "ball")=${cos(v, tBlue).toFixed(3)} cos(video, redImg)=${cos(v, a).toFixed(3)} cos(video, video+poster)=${cos(v, vp).toFixed(3)}`);
+  window.__gemmaResult = { ok: a.length === 768 && cos(a, tRed) > cos(a, tBlue) && cos(v, tBlue) > cos(v, tRed), device: e.device, ms: { load: t1 - t0, image: t2 - t1, video: t3 - t2, videoPoster: t4 - t3 } };
+  log(window.__gemmaResult.ok ? 'OK' : 'FAILED');
+} catch (error) {
+  log('ERROR ' + (error?.stack || error));
+  window.__gemmaResult = { ok: false, error: String(error) };
+}
+</script>
+</body>
+</html>
