@@ -1,6 +1,6 @@
 import * as db from './db.js';
 import { collectPool, collectRanking, resolveVideoUrl, mediaProxyUrl } from './scraper.js';
-import { mergePop } from './popularity.js';
+import { mergePop, POP_PERIODS, rankScore } from './popularity.js';
 import { Embedder } from './embed.js';
 import { computeRound, topSeen } from './engine.js';
 import { rankingToPairs, KERNELS } from './gppl.js';
@@ -15,7 +15,8 @@ const GEMMA_FRAMES = 4;       // frames per video in 'gemma' mode (same position
 const GEMMA_CONCURRENCY = 2;  // the model is the bottleneck there: fetch the next video's frames while one runs
 // Embeddings precomputed by GitHub Actions (tools/gemma-batch/embed.mjs, same recipe, q4 on CPU).
 // Against the browser's own vectors: cosine 0.98–0.99 (WASM q4) and 0.97–0.99 (WebGPU fp16), so they share a store.
-const GEMMA_DATA_URL = 'https://raw.githubusercontent.com/okcysk/monsnodePreferenceFinder/gemma-data/gemma.json';
+const GEMMA_DATA_URL = new URLSearchParams(location.search).get('gemmaData')   // ?gemmaData=… for testing
+  || 'https://raw.githubusercontent.com/okcysk/monsnodePreferenceFinder/gemma-data/gemma.json';
 const MODE_LABEL = { thumb: 'サムネ', frames: 'サムネ＋フレーム', gemma: '動画（EmbeddingGemma 2）' };
 
 const $ = id => document.getElementById(id);
@@ -126,7 +127,7 @@ async function boot() {
   buildPool();
   ui.query.value = session.query || '';
   setStatus(videos.size ? `候補 ${videos.size} 本 / 埋め込み済み ${pool.size} 本` : '「プール取得」で候補を集めてください', videos.size ? pool.size / videos.size : 0);
-  if (pool.size < videos.size) startEmbedding();
+  if (pool.size < videos.size || embedMode === 'gemma') startEmbedding();   // gemma: also picks up the batch's new videos
   if (session.current.length === 4 && session.current.every(id => pool.has(id))) {
     // Resume: rebuild the posterior (for the best thumbnail / results) but keep the same four on screen.
     if (session.pairs.length) lastRound = computeRound(roundArgs());
@@ -233,11 +234,50 @@ ui.start.addEventListener('click', async () => {
 });
 
 // ---------- embedding ----------
-let precomputed = null;   // Promise<items | null>, fetched once per page load
+let precomputed = null;   // Promise<gemma.json | null>, fetched once per page load
+const loadPrecomputed = () => precomputed ??= fetch(GEMMA_DATA_URL, { cache: 'no-cache' })
+  .then(r => (r.ok ? r.json() : null)).catch(() => null);
+
+/**
+ * Add the batch's videos as candidates, so the Gemma mode works without "プール取得": rankings first, then the
+ * newest, at most the pool size (プール本数) per page load. Only without a search query (they are not about it).
+ * Videos already here get the batch's ranking as popularity. Returns how many were added.
+ */
+async function addPrecomputedCandidates(data) {
+  if (!data?.meta || session.query) return 0;
+  const pops = new Map();
+  for (const { period } of POP_PERIODS) {
+    const ids = data.ranking?.[period] || [];
+    ids.forEach((id, rank) => {
+      const pop = { s: rankScore(period, rank, ids.length), period, rank: rank + 1, seenAt: data.ranking.fetchedAt };
+      if (!pops.has(id) || pops.get(id).s < pop.s) pops.set(id, pop);
+    });
+  }
+  const ids = Object.keys(data.items || {}).filter(id => data.meta[id]?.thumbnail);
+  ids.sort((a, b) => (pops.has(b) - pops.has(a)) || (data.items[b][0] - data.items[a][0]));
+  const target = Number(ui.target.value) || 300;
+  const rows = [];
+  let added = 0;
+  for (const id of ids) {
+    const old = videos.get(id);
+    if (old) {
+      const pop = mergePop(old.pop, pops.get(id));
+      if (pop !== old.pop) rows.push({ ...old, pop });
+    } else if (added < target) {
+      const v = { id, ...data.meta[id] };
+      if (pops.has(id)) v.pop = pops.get(id);
+      rows.push(v);
+      added++;
+    }
+  }
+  for (const v of rows) videos.set(v.id, v);
+  if (rows.length) await db.putMany('videos', rows);
+  return added;
+}
+
 /** Copy precomputed EmbeddingGemma 2 vectors for the candidates that do not have one yet. Returns how many. */
-async function importPrecomputed() {
-  precomputed ??= fetch(GEMMA_DATA_URL, { cache: 'no-cache' }).then(r => (r.ok ? r.json() : null)).then(d => d?.items ?? null).catch(() => null);
-  const items = await precomputed;
+async function importPrecomputed(data) {
+  const items = data?.items;
   if (!items) return 0;
   const rows = [];
   for (const id of videos.keys()) {
@@ -284,8 +324,10 @@ function startEmbedding() {
   const clip = getEmbedder('clip');
   (async () => {
     if (mode === 'gemma') {
-      const n = await importPrecomputed();
-      if (n) setStatus(`事前計算済みの EmbeddingGemma 2 を ${n} 本読み込みました（残りはこのブラウザで計算します）`);
+      const data = await loadPrecomputed();
+      const added = await addPrecomputedCandidates(data);
+      const n = await importPrecomputed(data);
+      if (added || n) setStatus(`事前計算から候補 ${added} 本を追加し、EmbeddingGemma 2 を ${n} 本読み込みました（無い動画だけこのブラウザで計算します）`, videos.size ? pool.size / videos.size : 0);
       if (n && ui.grid.hidden && pool.size >= MIN_POOL) nextRound();
     }
     const broken = new Set(session.broken);

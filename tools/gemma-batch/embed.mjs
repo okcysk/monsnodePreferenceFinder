@@ -10,7 +10,10 @@
 //
 // Output (OUT_DIR, default ./data):
 //   gemma.json         { version, model, dtype, frames, visionTokens, updatedAt,
-//                        items: { [id]: [addedAt(ms), kind "v"|"t", scale, base64 int8 × 768] } }
+//                        items: { [id]: [addedAt(ms), kind "v"|"t", scale, base64 int8 × 768] },
+//                        meta:  { [id]: {title, thumbnail, pageUrl, redirectUrl, redirectId} },
+//                        ranking: { fetchedAt, "24h": [ids…], "3d": [...], "7d": [...] } }
+//   so the site can add these videos as candidates without reading monsnode itself.
 //   gemma-status.json  what the last run did (counts, first errors), readable without signing in
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
@@ -49,14 +52,21 @@ async function api(path) {
   return data;
 }
 
+const ranking = { fetchedAt: Date.now() };   // period → ids in ranking order (the site turns them into popularity)
+
 /** Ranking videos first (they are what most people see), then the newest list pages. */
 async function candidates() {
   const out = new Map();
   for (const [period, pages] of [['24h', [0]], ['3d', [0]], ['7d', [0, 1]]]) {
+    ranking[period] = [];
     for (const page of pages) {
       try {
         const d = await api(`/search?ranking=1&period=${period}&page=${page}`);
-        for (const v of d.videos || []) if (v.thumbnail && v.redirectId && !out.has(v.id)) out.set(v.id, v);
+        for (const v of d.videos || []) {
+          if (!v.thumbnail || !v.redirectId) continue;
+          if (!ranking[period].includes(v.id)) ranking[period].push(v.id);
+          if (!out.has(v.id)) out.set(v.id, v);
+        }
       } catch (error) { console.warn(`ranking ${period}/${page}: ${error.message}`); listErrors.push(`ranking ${period}/${page}: ${error.message}`); }
       await sleep(400);
     }
@@ -113,13 +123,15 @@ await mkdir(OUT, { recursive: true });
 let data = { items: {} };
 try { data = JSON.parse(await readFile(`${OUT}/gemma.json`, 'utf8')); } catch { /* first run */ }
 const items = data.items || {};
+const meta = data.meta || {};
 const status = { startedAt: new Date(started).toISOString(), api: API, candidates: 0, todo: 0, added: 0, upgraded: 0, thumbOnly: 0, failed: 0, errors: [], frameErrors: [] };
 
 async function save(final = false) {
   const ids = Object.keys(items).sort((a, b) => items[b][0] - items[a][0]).slice(0, MAX_ITEMS);
   const kept = Object.fromEntries(ids.map(id => [id, items[id]]));
-  const out = { version: 1, model: MODEL_ID, dtype: DTYPE, frames: FRAMES, frameSize: FRAME_SIZE, visionTokens: VISION_TOKENS,
-    updatedAt: new Date().toISOString(), count: ids.length, items: kept };
+  const keptMeta = Object.fromEntries(ids.filter(id => meta[id]).map(id => [id, meta[id]]));
+  const out = { version: 2, model: MODEL_ID, dtype: DTYPE, frames: FRAMES, frameSize: FRAME_SIZE, visionTokens: VISION_TOKENS,
+    updatedAt: new Date().toISOString(), count: ids.length, items: kept, meta: keptMeta, ranking };
   await writeFile(`${OUT}/gemma.json`, JSON.stringify(out));
   await writeFile(`${OUT}/gemma-status.json`, JSON.stringify({ ...status, total: ids.length, final,
     elapsedMin: +((Date.now() - started) / 60e3).toFixed(1), updatedAt: out.updatedAt }, null, 1));
@@ -127,6 +139,7 @@ async function save(final = false) {
 
 const list = await candidates();
 status.candidates = list.length;
+for (const v of list) meta[v.id] = { title: v.title, thumbnail: v.thumbnail, pageUrl: v.pageUrl, redirectUrl: v.redirectUrl, redirectId: v.redirectId };
 status.listErrors = listErrors.slice(0, 6);
 // new videos first, then ones that only have a thumbnail embedding (their frames are tried again)
 const todo = [...list.filter(v => !items[v.id]), ...list.filter(v => items[v.id]?.[1] === 't')].slice(0, MAX_NEW);
