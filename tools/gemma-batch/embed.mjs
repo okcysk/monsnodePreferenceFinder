@@ -36,10 +36,13 @@ async function apiBase() {
 }
 const API = await apiBase();
 
+const listErrors = [];   // shown in gemma-status.json (Actions logs need a sign-in to read)
 async function api(path) {
-  const res = await fetch(`${API}${path}`);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.error) throw new Error(data.error || `Worker HTTP ${res.status}`);
+  const res = await fetch(`${API}${path}`, { headers: { 'user-agent': 'Mozilla/5.0 (gppl-gemma-batch)' } });
+  const text = await res.text();
+  let data = {};
+  try { data = JSON.parse(text); } catch { /* not JSON */ }
+  if (!res.ok || data.error) throw new Error(data.error || `Worker HTTP ${res.status}: ${text.slice(0, 160).replace(/\s+/g, ' ')}`);
   return data;
 }
 
@@ -51,7 +54,7 @@ async function candidates() {
       try {
         const d = await api(`/search?ranking=1&period=${period}&page=${page}`);
         for (const v of d.videos || []) if (v.thumbnail && v.redirectId && !out.has(v.id)) out.set(v.id, v);
-      } catch (error) { console.warn(`ranking ${period}/${page}: ${error.message}`); }
+      } catch (error) { console.warn(`ranking ${period}/${page}: ${error.message}`); listErrors.push(`ranking ${period}/${page}: ${error.message}`); }
       await sleep(400);
     }
   }
@@ -59,7 +62,7 @@ async function candidates() {
     try {
       const d = await api(`/search?q=&page=${page}`);
       for (const v of d.videos || []) if (v.thumbnail && v.redirectId && !out.has(v.id)) out.set(v.id, v);
-    } catch (error) { console.warn(`list page ${page}: ${error.message}`); break; }
+    } catch (error) { console.warn(`list page ${page}: ${error.message}`); listErrors.push(`list page ${page}: ${error.message}`); break; }
     await sleep(500);
   }
   return [...out.values()];
@@ -121,6 +124,7 @@ async function save(final = false) {
 
 const list = await candidates();
 status.candidates = list.length;
+status.listErrors = listErrors.slice(0, 6);
 const todo = list.filter(v => !items[v.id]).slice(0, MAX_NEW);
 status.todo = todo.length;
 console.log(`candidates ${list.length}, to embed ${todo.length}, stored ${Object.keys(items).length}`);
