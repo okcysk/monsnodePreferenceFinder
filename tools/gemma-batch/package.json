@@ -4,9 +4,11 @@
   "type": "module",
   "description": "Precompute EmbeddingGemma 2 video embeddings for Preference Finder (run by GitHub Actions)",
   "scripts": {
-    "embed": "node embed.mjs"
+    "embed": "node embed.mjs",
+    "clip": "node clip.mjs"
   },
   "dependencies": {
-    "@huggingface/transformers": "4.3.1"
+    "@huggingface/transformers": "4.3.1",
+    "transformers3": "npm:@huggingface/transformers@3.5.1"
   }
 }

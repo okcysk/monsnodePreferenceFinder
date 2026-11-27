@@ -6,6 +6,7 @@ import { computeRound, topSeen } from './engine.js';
 import { rankingToPairs, KERNELS } from './gppl.js';
 import { nextBeta } from './acquisition.js';
 import { grabFrames, meanEmbedding } from './frames.js';
+import { loadPrecomputed, dequantize } from './precomputed.js';
 
 const MIN_POOL = 12;          // embedded videos needed before the first round
 const STREAK_TO_FINISH = 3;   // best ranked #1 this many rounds in a row → show results
@@ -13,10 +14,6 @@ const FRAME_COUNT = 4;        // frames per video in 'frames' mode (averaged wit
 const FRAME_CONCURRENCY = 4;  // videos whose frames are fetched at the same time (network-bound)
 const GEMMA_FRAMES = 4;       // frames per video in 'gemma' mode (same positions as 'frames'; one clip embedding)
 const GEMMA_CONCURRENCY = 2;  // the model is the bottleneck there: fetch the next video's frames while one runs
-// Embeddings precomputed by GitHub Actions (tools/gemma-batch/embed.mjs, same recipe, q4 on CPU).
-// Against the browser's own vectors: cosine 0.98–0.99 (WASM q4) and 0.97–0.99 (WebGPU fp16), so they share a store.
-const GEMMA_DATA_URL = new URLSearchParams(location.search).get('gemmaData')   // ?gemmaData=… for testing
-  || 'https://raw.githubusercontent.com/okcysk/monsnodePreferenceFinder/gemma-data/gemma.json';
 const MODE_LABEL = { thumb: 'サムネ', frames: 'サムネ＋フレーム', gemma: '動画（EmbeddingGemma 2）' };
 
 const $ = id => document.getElementById(id);
@@ -234,9 +231,7 @@ ui.start.addEventListener('click', async () => {
 });
 
 // ---------- embedding ----------
-let precomputed = null;   // Promise<gemma.json | null>, fetched once per page load
-const loadPrecomputed = () => precomputed ??= fetch(GEMMA_DATA_URL, { cache: 'no-cache' })
-  .then(r => (r.ok ? r.json() : null)).catch(() => null);
+let precomputedClip = null;   // id → [scale, b64] from the batch: the map uses these, so no need to compute them here
 
 /**
  * Add the batch's videos as candidates, so the Gemma mode works without "プール取得": rankings first, then the
@@ -283,11 +278,7 @@ async function importPrecomputed(data) {
   for (const id of videos.keys()) {
     const item = items[id];
     if (!item || gemmaEmb.has(id)) continue;
-    const [, , scale, b64] = item;
-    const q = new Int8Array(Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer);
-    const vec = Float32Array.from(q, x => x * scale);
-    let n = 0; for (const x of vec) n += x * x; n = Math.sqrt(n) || 1;
-    for (let i = 0; i < vec.length; i++) vec[i] /= n;
+    const vec = dequantize(item[2], item[3]);
     gemmaEmb.set(id, vec);
     rows.push({ id, vec });
     if (embedMode === 'gemma' && !session.broken.includes(id)) pool.set(id, vec);
@@ -325,6 +316,7 @@ function startEmbedding() {
   (async () => {
     if (mode === 'gemma') {
       const data = await loadPrecomputed();
+      precomputedClip = data?.clip ?? null;
       const added = await addPrecomputedCandidates(data);
       const n = await importPrecomputed(data);
       if (added || n) setStatus(`事前計算から候補 ${added} 本を追加し、EmbeddingGemma 2 を ${n} 本読み込みました（無い動画だけこのブラウザで計算します）`, videos.size ? pool.size / videos.size : 0);
@@ -333,7 +325,7 @@ function startEmbedding() {
     const broken = new Set(session.broken);
     const src = embOf(mode);
     // gemma mode also fills in missing CLIP thumbnail vectors (the map's tags use them)
-    const needed = v => !src.has(v.id) || (mode === 'gemma' && !thumbEmb.has(v.id));
+    const needed = v => !src.has(v.id) || (mode === 'gemma' && !thumbEmb.has(v.id) && !precomputedClip?.[v.id]);
     const todo = [...videos.values()].filter(v => needed(v) && !broken.has(v.id) && v.thumbnail && !failedIn[mode]?.has(v.id));
     let done = 0, failed = 0, thumbOnly = 0;
     const label = mode === 'thumb' ? '埋め込み中' : `${MODE_LABEL[mode]}の埋め込み中`;
@@ -359,7 +351,7 @@ function startEmbedding() {
             if (embedMode === 'gemma') pool.set(v.id, vec);
           }
           // The map's tags / text search use CLIP on the thumbnail (the captions are tuned for CLIP), so keep that too.
-          if (!thumbEmb.has(v.id)) {
+          if (!thumbEmb.has(v.id) && !precomputedClip?.[v.id]) {
             try {
               const t = await clip.embedThumbnail(v.id, v.thumbnail);
               thumbEmb.set(v.id, t);

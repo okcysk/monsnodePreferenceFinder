@@ -64,7 +64,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .hf-cache
-          key: embeddinggemma-2-q4-v1
+          key: embeddinggemma-2-q4-clip-q8-v2
 
       - name: Install
         working-directory: tools/gemma-batch
@@ -78,6 +78,10 @@ jobs:
       - name: Embed
         working-directory: tools/gemma-batch
         run: node embed.mjs
+
+      - name: CLIP thumbnails
+        working-directory: tools/gemma-batch
+        run: node clip.mjs
 
       - name: Publish to gemma-data
         if: always()

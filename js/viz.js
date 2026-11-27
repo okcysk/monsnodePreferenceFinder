@@ -8,6 +8,7 @@ import { popularityScores } from './popularity.js';
 import * as scraper from './scraper.js';   // web: has mediaProxyUrl (Worker fallback); extension: direct only
 const { resolveVideoUrl } = scraper;
 import { grabFrames } from './frames.js';
+import { loadPrecomputed, dequantize } from './precomputed.js';
 import { Embedder } from './embed.js';
 import { DEFAULT_TAGS, DEFAULT_TAGS_VERSION, mergeNewDefaults, scoreTags, scoreText } from './tags.js';
 
@@ -57,6 +58,11 @@ async function load() {
   const gpu = settings?.clipDevice === 'webgpu';
   embedModel = mode === 'gemma' ? 'gemma' : 'clip';
   clipVecs = mode === 'gemma' ? new Map((await db.getAll('embeddings' + (gpu ? 'Gpu' : ''))).map(e => [e.id, e.vec])) : null;
+  if (clipVecs) {
+    // thumbnails the browser did not embed: the batch's CLIP vectors (GitHub Actions, q8)
+    const clip = (await loadPrecomputed())?.clip || {};
+    for (const [id, [scale, b64]] of Object.entries(clip)) if (!clipVecs.has(id)) clipVecs.set(id, dequantize(scale, b64));
+  }
   const store = ({ thumb: 'embeddings', frames: 'frameEmbeddings', gemma: 'gemmaEmbeddings' })[mode] + (gpu ? 'Gpu' : '');
   const embs = (await db.getAll(store)).filter(e => videos.has(e.id) && !broken.has(e.id));
   document.querySelector('.brand small').textContent = mode === 'gemma'
