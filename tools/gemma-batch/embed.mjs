@@ -5,6 +5,9 @@
 // (short side 320 px) as one video + the thumbnail as a poster image, 70 vision tokens per image, q4 weights.
 // When the frames cannot be read, the thumbnail alone is embedded (kind "t" instead of "v").
 //
+// Monsnode is read through the shared Cloudflare Worker (config.js). Monsnode answers 403 when the Worker runs
+// outside Japan, so the Worker pins itself near AWS Tokyo ([placement] region in monsnodeWebPlayer/worker/wrangler.toml).
+//
 // Output (OUT_DIR, default ./data):
 //   gemma.json         { version, model, dtype, frames, visionTokens, updatedAt,
 //                        items: { [id]: [addedAt(ms), kind "v"|"t", scale, base64 int8 × 768] } }
