@@ -64,7 +64,12 @@ jobs:
 
       - name: Install
         working-directory: tools/gemma-batch
-        run: npm install --no-audit --no-fund --ignore-scripts
+        run: |
+          for i in 1 2 3; do
+            npm install --no-audit --no-fund --ignore-scripts && exit 0
+            echo "npm install failed (attempt $i), retrying"; sleep 20
+          done
+          exit 1
 
       - name: Embed
         working-directory: tools/gemma-batch
@@ -74,7 +79,8 @@ jobs:
         if: always()
         working-directory: data
         run: |
-          test -f gemma.json || exit 0
+          # only after an Embed run that wrote its status (otherwise keep what is published)
+          test -f gemma.json && test -f gemma-status.json || exit 0
           git init -q -b gemma-data
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
