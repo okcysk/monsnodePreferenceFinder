@@ -13,6 +13,9 @@ const FRAME_COUNT = 4;        // frames per video in 'frames' mode (averaged wit
 const FRAME_CONCURRENCY = 4;  // videos whose frames are fetched at the same time (network-bound)
 const GEMMA_FRAMES = 4;       // frames per video in 'gemma' mode (same positions as 'frames'; one clip embedding)
 const GEMMA_CONCURRENCY = 2;  // the model is the bottleneck there: fetch the next video's frames while one runs
+// Embeddings precomputed by GitHub Actions (tools/gemma-batch/embed.mjs, same recipe, q4 on CPU).
+// Against the browser's own vectors: cosine 0.98–0.99 (WASM q4) and 0.97–0.99 (WebGPU fp16), so they share a store.
+const GEMMA_DATA_URL = 'https://raw.githubusercontent.com/okcysk/monsnodePreferenceFinder/gemma-data/gemma.json';
 const MODE_LABEL = { thumb: 'サムネ', frames: 'サムネ＋フレーム', gemma: '動画（EmbeddingGemma 2）' };
 
 const $ = id => document.getElementById(id);
@@ -230,6 +233,29 @@ ui.start.addEventListener('click', async () => {
 });
 
 // ---------- embedding ----------
+let precomputed = null;   // Promise<items | null>, fetched once per page load
+/** Copy precomputed EmbeddingGemma 2 vectors for the candidates that do not have one yet. Returns how many. */
+async function importPrecomputed() {
+  precomputed ??= fetch(GEMMA_DATA_URL, { cache: 'no-cache' }).then(r => (r.ok ? r.json() : null)).then(d => d?.items ?? null).catch(() => null);
+  const items = await precomputed;
+  if (!items) return 0;
+  const rows = [];
+  for (const id of videos.keys()) {
+    const item = items[id];
+    if (!item || gemmaEmb.has(id)) continue;
+    const [, , scale, b64] = item;
+    const q = new Int8Array(Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer);
+    const vec = Float32Array.from(q, x => x * scale);
+    let n = 0; for (const x of vec) n += x * x; n = Math.sqrt(n) || 1;
+    for (let i = 0; i < vec.length; i++) vec[i] /= n;
+    gemmaEmb.set(id, vec);
+    rows.push({ id, vec });
+    if (embedMode === 'gemma' && !session.broken.includes(id)) pool.set(id, vec);
+  }
+  if (rows.length) await db.putMany(storeOf('gemmaEmbeddings'), rows);
+  return rows.length;
+}
+
 /** One worker per model, created when first needed. */
 function getEmbedder(model) {
   const modelName = model === 'gemma' ? 'EmbeddingGemma 2' : 'CLIP';
@@ -253,9 +279,15 @@ function startEmbedding() {
   if (embedding) return;
   embedding = true;
   const mode = embedMode;
-  const embedder = getEmbedder(mode === 'gemma' ? 'gemma' : 'clip');
+  const model = mode === 'gemma' ? 'gemma' : 'clip';
+  const gemma = () => getEmbedder('gemma');   // created only when a video is not precomputed (the model is large)
   const clip = getEmbedder('clip');
   (async () => {
+    if (mode === 'gemma') {
+      const n = await importPrecomputed();
+      if (n) setStatus(`事前計算済みの EmbeddingGemma 2 を ${n} 本読み込みました（残りはこのブラウザで計算します）`);
+      if (n && ui.grid.hidden && pool.size >= MIN_POOL) nextRound();
+    }
     const broken = new Set(session.broken);
     const src = embOf(mode);
     // gemma mode also fills in missing CLIP thumbnail vectors (the map's tags use them)
@@ -278,7 +310,7 @@ function startEmbedding() {
               fetch(v.thumbnail, { credentials: 'omit' }).then(r => (r.ok ? r.blob() : null)).catch(() => null),
             ]);
             if (!frames && !poster) throw new Error('no frames and no thumbnail');
-            const vec = frames ? await embedder.embedVideo(frames, frames[0]?.duration, poster) : await embedder.embedBlob(poster);
+            const vec = frames ? await gemma().embedVideo(frames, frames[0]?.duration, poster) : await gemma().embedBlob(poster);
             if (!frames) thumbOnly++;
             gemmaEmb.set(v.id, vec);
             await db.put(storeOf('gemmaEmbeddings'), { id: v.id, vec });
@@ -321,7 +353,7 @@ function startEmbedding() {
     };
     const progress = () => {
       if (embedMode !== mode) return;   // switched away: the new mode owns the status line
-      setStatus(`${label} ${done}/${todo.length}（失敗 ${failed}${thumbOnly ? `・サムネのみ ${thumbOnly}` : ''}）・プール ${pool.size} 本${embedder.device ? ` · ${embedder.device}` : ''}`, done / todo.length);
+      setStatus(`${label} ${done}/${todo.length}（失敗 ${failed}${thumbOnly ? `・サムネのみ ${thumbOnly}` : ''}）・プール ${pool.size} 本${embedders[model]?.device ? ` · ${embedders[model].device}` : ''}`, done / todo.length);
       if (ui.grid.hidden && pool.size >= MIN_POOL) nextRound();
     };
     // Frame grabbing is network-bound: several videos at a time; CLIP batches still run one by one in the worker.

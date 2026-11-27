@@ -1,0 +1,84 @@
+# Precompute EmbeddingGemma 2 embeddings for the "動画（Gemma 2）" mode (tools/gemma-batch/embed.mjs).
+# The result goes to the orphan branch `gemma-data` (force-pushed, no history), and the site reads
+#   https://raw.githubusercontent.com/<owner>/<repo>/gemma-data/gemma.json
+# so the browser only computes what the batch has not covered yet.
+name: Gemma embeddings
+
+on:
+  schedule:
+    - cron: "0 18 * * *"          # daily, 03:00 JST
+  workflow_dispatch:
+    inputs:
+      new_pages:
+        description: "new-arrival list pages to read"
+        default: "5"
+      max_new:
+        description: "max embeddings this run"
+        default: "1000"
+  push:
+    branches: [main]
+    paths:
+      - "tools/gemma-batch/**"
+      - ".github/workflows/gemma-embed.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gemma-embed
+  cancel-in-progress: false
+
+jobs:
+  embed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      OUT_DIR: ${{ github.workspace }}/data
+      HF_CACHE_DIR: ${{ github.workspace }}/.hf-cache
+      NEW_PAGES: ${{ github.event.inputs.new_pages || '5' }}
+      MAX_NEW: ${{ github.event.inputs.max_new || '1000' }}
+      TIME_BUDGET_MIN: "300"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Previous results
+        run: |
+          mkdir -p data
+          if git fetch --depth=1 origin gemma-data; then
+            git show FETCH_HEAD:gemma.json > data/gemma.json || true
+          fi
+          ls -la data
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: ffmpeg
+        run: ffmpeg -version | head -1 || (sudo apt-get update && sudo apt-get install -y ffmpeg)
+
+      - name: Model cache
+        uses: actions/cache@v4
+        with:
+          path: .hf-cache
+          key: embeddinggemma-2-q4-v1
+
+      - name: Install
+        working-directory: tools/gemma-batch
+        run: npm install --no-audit --no-fund --ignore-scripts
+
+      - name: Embed
+        working-directory: tools/gemma-batch
+        run: node embed.mjs
+
+      - name: Publish to gemma-data
+        if: always()
+        working-directory: data
+        run: |
+          test -f gemma.json || exit 0
+          git init -q -b gemma-data
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gemma.json gemma-status.json
+          git commit -q -m "EmbeddingGemma 2 embeddings $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" gemma-data
+          cat gemma-status.json
