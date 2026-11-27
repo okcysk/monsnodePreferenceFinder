@@ -113,7 +113,7 @@ await mkdir(OUT, { recursive: true });
 let data = { items: {} };
 try { data = JSON.parse(await readFile(`${OUT}/gemma.json`, 'utf8')); } catch { /* first run */ }
 const items = data.items || {};
-const status = { startedAt: new Date(started).toISOString(), api: API, candidates: 0, todo: 0, added: 0, thumbOnly: 0, failed: 0, errors: [] };
+const status = { startedAt: new Date(started).toISOString(), api: API, candidates: 0, todo: 0, added: 0, upgraded: 0, thumbOnly: 0, failed: 0, errors: [], frameErrors: [] };
 
 async function save(final = false) {
   const ids = Object.keys(items).sort((a, b) => items[b][0] - items[a][0]).slice(0, MAX_ITEMS);
@@ -128,7 +128,8 @@ async function save(final = false) {
 const list = await candidates();
 status.candidates = list.length;
 status.listErrors = listErrors.slice(0, 6);
-const todo = list.filter(v => !items[v.id]).slice(0, MAX_NEW);
+// new videos first, then ones that only have a thumbnail embedding (their frames are tried again)
+const todo = [...list.filter(v => !items[v.id]), ...list.filter(v => items[v.id]?.[1] === 't')].slice(0, MAX_NEW);
 status.todo = todo.length;
 console.log(`candidates ${list.length}, to embed ${todo.length}, stored ${Object.keys(items).length}`);
 
@@ -145,17 +146,24 @@ for (const [k, v] of todo.entries()) {
   const t0 = Date.now();
   try {
     const [clip, img] = await Promise.all([
-      frames(v).catch(error => { console.log(`  ${v.id}: frames unavailable (${error.message.split('\n')[0]})`); return null; }),
+      frames(v).catch(error => {
+        const why = String(error.stderr || error.message).split('\n').filter(Boolean).slice(0, 2).join(' / ').slice(0, 240);
+        console.log(`  ${v.id}: frames unavailable (${why})`);
+        if (status.frameErrors.length < 8) status.frameErrors.push(`${v.id}: ${why}`);
+        return null;
+      }),
       poster(v).catch(() => null),
     ]);
     if (!clip && !img) throw new Error('no frames and no thumbnail');
+    const had = items[v.id];
+    if (had?.[1] === 't' && !clip) { console.log(`${k + 1}/${todo.length} ${v.id} still thumbnail only`); continue; }
     const inputs = await processor(null, img ? [img] : null, null, clip ? [clip] : null);
     const { sentence_embedding } = await model(inputs);
     const vec = Float32Array.from(sentence_embedding.data.subarray(0, sentence_embedding.dims.at(-1)));
     let n = 0; for (const x of vec) n += x * x; n = Math.sqrt(n) || 1;
     for (let i = 0; i < vec.length; i++) vec[i] /= n;
-    items[v.id] = [Date.now(), clip ? 'v' : 't', ...quantize(vec)];
-    status.added++;
+    items[v.id] = [had?.[0] ?? Date.now(), clip ? 'v' : 't', ...quantize(vec)];
+    if (had) status.upgraded++; else status.added++;
     if (!clip) status.thumbOnly++;
     console.log(`${k + 1}/${todo.length} ${v.id} ${clip ? 'video' : 'thumb'} ${((Date.now() - t0) / 1e3).toFixed(1)} s`);
   } catch (error) {
@@ -163,7 +171,7 @@ for (const [k, v] of todo.entries()) {
     if (status.errors.length < 10) status.errors.push(`${v.id}: ${String(error.message).slice(0, 200)}`);
     console.log(`${k + 1}/${todo.length} ${v.id} failed: ${error.message}`);
   }
-  if (status.added && status.added % 25 === 0) await save();
+  if ((status.added + status.upgraded) % 25 === 24) await save();
 }
 await save(true);
 console.log(`done: added ${status.added} (thumbnail only ${status.thumbOnly}), failed ${status.failed}, stored ${Math.min(Object.keys(items).length, MAX_ITEMS)}`);
