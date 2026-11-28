@@ -132,7 +132,8 @@ async function save(final = false) {
   const keptMeta = Object.fromEntries(ids.filter(id => meta[id]).map(id => [id, meta[id]]));
   const keptClip = Object.fromEntries(ids.filter(id => data.clip?.[id]).map(id => [id, data.clip[id]]));   // filled by clip.mjs
   const out = { version: 2, model: MODEL_ID, dtype: DTYPE, frames: FRAMES, frameSize: FRAME_SIZE, visionTokens: VISION_TOKENS,
-    updatedAt: new Date().toISOString(), count: ids.length, items: kept, meta: keptMeta, ranking, clip: keptClip };
+    updatedAt: new Date().toISOString(), count: ids.length, items: kept, meta: keptMeta, ranking, clip: keptClip,
+    clipText: data.clipText, tsne: data.tsne };   // refreshed by clip.mjs / tsne.mjs after this script
   await writeFile(`${OUT}/gemma.json`, JSON.stringify(out));
   await writeFile(`${OUT}/gemma-status.json`, JSON.stringify({ ...status, total: ids.length, final,
     elapsedMin: +((Date.now() - started) / 60e3).toFixed(1), updatedAt: out.updatedAt }, null, 1));

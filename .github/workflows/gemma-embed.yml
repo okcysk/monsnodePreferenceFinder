@@ -83,6 +83,10 @@ jobs:
         working-directory: tools/gemma-batch
         run: node clip.mjs
 
+      - name: t-SNE layout
+        working-directory: tools/gemma-batch
+        run: node tsne.mjs
+
       - name: Publish to gemma-data
         if: always()
         working-directory: data

@@ -45,7 +45,17 @@ const getTextEmbedder = () => textEmbedder ??= new Embedder({
   preload: false,
   onModelProgress: p => setStatus(`テキストモデルを読み込み中… ${Math.round(p.progress ?? 0)}%`, (p.progress ?? 0) / 100),
 });
-const embedTexts = texts => getTextEmbedder().embedTexts(texts);
+/**
+ * CLIP text embeddings: the default tags' captions come precomputed (GitHub Actions, same q8 model as the browser's
+ * text embedder); only other captions (custom tags, text search) load the text model here.
+ */
+async function embedTexts(texts) {
+  const pre = (await loadPrecomputed())?.clipText || {};
+  const missing = [...new Set(texts.filter(t => !pre[t]))];
+  const fresh = missing.length ? await getTextEmbedder().embedTexts(missing) : [];
+  const got = new Map(missing.map((t, i) => [t, fresh[i]]));
+  return texts.map(t => (pre[t] ? dequantize(...pre[t]) : got.get(t)));
+}
 
 function setStatus(t, f = null) { ui.status.textContent = t; if (f !== null) ui.meter.style.width = `${Math.round(f * 100)}%`; }
 
@@ -59,8 +69,10 @@ async function load() {
   embedModel = mode === 'gemma' ? 'gemma' : 'clip';
   clipVecs = mode === 'gemma' ? new Map((await db.getAll('embeddings' + (gpu ? 'Gpu' : ''))).map(e => [e.id, e.vec])) : null;
   if (clipVecs) {
+    const pre = await loadPrecomputed();
+    if (pre?.tsne?.ids) precomputedTsne = new Map(pre.tsne.ids.map((id, i) => [id, [pre.tsne.xy[2 * i], pre.tsne.xy[2 * i + 1]]]));
     // thumbnails the browser did not embed: the batch's CLIP vectors (GitHub Actions, q8)
-    const clip = (await loadPrecomputed())?.clip || {};
+    const clip = pre?.clip || {};
     for (const [id, [scale, b64]] of Object.entries(clip)) if (!clipVecs.has(id)) clipVecs.set(id, dequantize(scale, b64));
   }
   const store = ({ thumb: 'embeddings', frames: 'frameEmbeddings', gemma: 'gemmaEmbeddings' })[mode] + (gpu ? 'Gpu' : '');
@@ -91,7 +103,7 @@ async function load() {
   });
   items.forEach((it, i) => { it.idx = i; });
   muMax = Math.max(1e-6, ...items.map(it => Math.abs(it.mu ?? 0)));
-  setStatus(`${items.length} 本 · 512次元 → PCA ${pca48[0].length}次元 · 比較 ${pairs.length} 件`, 1);
+  setStatus(`${items.length} 本 · ${embedModel === 'gemma' ? 768 : 512}次元 → PCA ${pca48[0].length}次元 · 比較 ${pairs.length} 件`, 1);
   window.__vizItems = () => items;   // debug hook (positions, scores)
   window.__viz = { count: items.length, dim: embs[0].vec.length, pcaDim: pca48[0].length, pairs: pairs.length, pop: popInfo };
   refreshColorOptions();
@@ -341,22 +353,57 @@ function layout() {
     const p2 = pcaProject(items.map(it => it.pca48), 2);
     items.forEach((it, i) => { it.x = p2[i][0]; it.y = p2[i][1] ?? 0; });
     fitView(); draw();
-    setStatus(`${items.length} 本 · 512次元 → PCA ${items[0].pca48.length}次元 → 第1・第2主成分`, 1);
+    setStatus(`${items.length} 本 · ${embedModel === 'gemma' ? 768 : 512}次元 → PCA ${items[0].pca48.length}次元 → 第1・第2主成分`, 1);
+    return;
+  }
+  const pre = precomputedStart();
+  if (pre && pre.covered >= items.length * 0.9) {
+    // nearly all covered: show the batch's layout as it is
+    items.forEach((it, i) => { [it.x, it.y] = pre.start[i]; });
+    fitView(); draw();
+    setStatus(`${items.length} 本 · 768次元 → PCA 48次元 → t-SNE 2次元（GitHub Actions で事前計算した配置${pre.covered < items.length ? `。${items.length - pre.covered} 本は近傍の隣` : ''}）`, 1);
+    window.__vizDone = true;
     return;
   }
   const tsne = new TSNE(items.map(it => it.pca48), { perplexity: Math.min(30, Math.max(5, Math.floor(items.length / 4))) });
-  const total = 600;
+  let total = 600;
+  if (pre) {
+    // partly covered: start from the batch's layout and only settle it (no early exaggeration, 150 steps)
+    tsne.Y = pre.start.map(([x, y]) => [x, y]);
+    tsne.iter = 250;
+    total = 400;
+  }
   const tick = () => {
     if (run !== tsneRun) return;
     tsne.step(10);
     tsne.Y.forEach((p, i) => { items[i].x = p[0]; items[i].y = p[1]; });
     if (tsne.iter <= 120 || tsne.iter % 50 === 0) fitView();
     draw();
-    setStatus(`t-SNE 計算中 ${tsne.iter}/${total}`, tsne.iter / total);
+    setStatus(pre ? `t-SNE 調整中（事前計算の配置から） ${tsne.iter - 250}/${total - 250}` : `t-SNE 計算中 ${tsne.iter}/${total}`, pre ? (tsne.iter - 250) / (total - 250) : tsne.iter / total);
     if (tsne.iter < total) requestAnimationFrame(tick);
-    else { fitView(); draw(); setStatus(`${items.length} 本 · 512次元 → PCA ${items[0].pca48.length}次元 → t-SNE 2次元`, 1); window.__vizDone = true; }
+    else { fitView(); draw(); setStatus(`${items.length} 本 · ${embedModel === 'gemma' ? 768 : 512}次元 → PCA ${items[0].pca48.length}次元 → t-SNE 2次元`, 1); window.__vizDone = true; }
   };
   tick();
+}
+
+let precomputedTsne = null;   // id → [x, y] from the batch (gemma mode only)
+/**
+ * Gemma mode: start from the batch's t-SNE layout. Videos it does not cover start next to their nearest covered
+ * neighbour (cosine, 768-D). Returns the starting positions and how many were covered, or null (too few covered).
+ */
+function precomputedStart() {
+  if (!precomputedTsne || !items.length) return null;
+  const placed = items.filter(it => precomputedTsne.has(it.id));
+  if (placed.length < items.length * 0.3) return null;
+  const pos = new Map(placed.map(it => [it, precomputedTsne.get(it.id)]));
+  for (const it of items) {
+    if (pos.has(it)) continue;
+    let best = placed[0], bestSim = -Infinity;
+    for (const o of placed) { const c = cosine(it.vec, o.vec); if (c > bestSim) { bestSim = c; best = o; } }
+    const [x, y] = pos.get(best);
+    pos.set(it, [x + (Math.random() - 0.5) * 2, y + (Math.random() - 0.5) * 2]);
+  }
+  return { start: items.map(it => pos.get(it)), covered: placed.length };
 }
 
 function fitView() {

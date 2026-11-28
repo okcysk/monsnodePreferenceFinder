@@ -51,10 +51,13 @@ export const DEFAULT_TAGS = [
   { since: 17, name: '美しい', pos: 'a stunningly beautiful woman, like a model', neg: 'an average-looking woman | a woman whose face is not visible | a blurry low-quality image' },
   // added in tag set version 18 (captions say "adult woman" on purpose)
   { since: 18, name: 'かわいい', pos: 'an adorable, cute-looking adult woman with a charming face', neg: 'a mature, elegant adult woman | a woman whose face is not visible | a blurry low-quality image' },
+  // added in tag set version 19 (contrasts include nude / sex scenes, otherwise most explicit thumbnails match)
+  { since: 19, name: 'パンちら', pos: 'an adult woman in a miniskirt whose panties are visible as she bends over or sits', neg: 'an adult woman in a miniskirt, panties not visible | an adult woman wearing only panties | a completely nude woman | a couple having sex | a close-up of nude private parts | a topless woman | a woman wearing pants' },
+  { since: 19, name: 'チクちら', pos: 'a nipple slip: an adult woman wearing a shirt with a nipple accidentally exposed', neg: 'a woman wearing a shirt, chest covered | a woman in lingerie | a topless woman | a completely nude woman | a couple having sex | a close-up of nude private parts' },
 ];
 
 /** Bumped when default tags change; saved tag lists are updated once (see mergeNewDefaults). */
-export const DEFAULT_TAGS_VERSION = 18;
+export const DEFAULT_TAGS_VERSION = 19;
 
 /** Default tags that were dropped (or replaced by a newer version): removed from saved lists only if the user left them exactly as shipped. */
 export const REMOVED_DEFAULTS = [
