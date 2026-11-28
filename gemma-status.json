@@ -1,0 +1,36 @@
+{
+ "startedAt": "2026-11-28T09:49:53.009Z",
+ "api": "https://monsnode-quad-search.spankbangquadplayer.workers.dev",
+ "candidates": 521,
+ "todo": 96,
+ "added": 51,
+ "upgraded": 5,
+ "thumbOnly": 6,
+ "failed": 0,
+ "errors": [],
+ "frameErrors": [
+  "39333918610180: Command failed: ffprobe -v error -show_entries format=duration -of csv=p=0 https://video.twimg.com/amplify_video/2119286987664527360/vid/avc1/1280x720/17NpWx2vauRj2w_k.mp4?tag=29",
+  "19749357271134: Could not find a compatible video.twimg.com MP4. Diagnostics: {\"redirectStatus\":200,\"pageTitle\":\"Link to external site\",\"htmlBytes\":2709,\"hasAtob\":true,\"hasMainLink\":true,\"hasVideoElement\":false,\"hasIframe\":true,\"challengeLike\":false}",
+  "148924345573216: ",
+  "131603408774444: Could not find a compatible video.twimg.com MP4. Diagnostics: {\"redirectStatus\":200,\"pageTitle\":\"Link to external site\",\"htmlBytes\":2709,\"hasAtob\":true,\"hasMainLink\":true,\"hasVideoElement\":false,\"hasIframe\":true,\"challengeLike\":false}",
+  "2077572381158035552: Command failed: ffprobe -v error -show_entries format=duration -of csv=p=0 https://video.twimg.com/amplify_video/2076892310080802816/vid/avc1/852x480/NKdkvA6w0z1zcKhB.mp4",
+  "2075749117121429091: Command failed: ffprobe -v error -show_entries format=duration -of csv=p=0 https://video.twimg.com/amplify_video/2075736541885038592/vid/avc1/1920x1080/6bmHQFvf-4fU-Ggq.mp4",
+  "166259967242243: ",
+  "3101469146397: Could not find a compatible video.twimg.com MP4. Diagnostics: {\"redirectStatus\":200,\"pageTitle\":\"Link to external site\",\"htmlBytes\":2701,\"hasAtob\":true,\"hasMainLink\":true,\"hasVideoElement\":false,\"hasIframe\":true,\"challengeLike\":false}"
+ ],
+ "listErrors": [],
+ "total": 777,
+ "final": true,
+ "elapsedMin": 21.2,
+ "updatedAt": "2026-11-28T10:11:03.382Z",
+ "clip": {
+  "added": 57,
+  "failed": 0,
+  "total": 759,
+  "elapsedMin": 0.1
+ },
+ "tsne": {
+  "count": 777,
+  "elapsedMin": 0.1
+ }
+}
